@@ -1,6 +1,10 @@
-# MNUERON
+<p align="center">
+  <img src="assets/mnueron-logo.png" alt="mnueron" width="360" />
+</p>
 
-**One memory layer. Every LLM. Every dev tool. Every app you build.**
+<h1 align="center">MNUERON</h1>
+
+<p align="center"><strong>One memory layer. Every LLM. Every dev tool. Every app you build.</strong></p>
 
 Persistent memory for Claude Desktop, Claude Code, Cursor, Windsurf, Cline —
 and any app you build with OpenAI, Anthropic, Mistral, or anything else.

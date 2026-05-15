@@ -25,19 +25,31 @@ npm install
 # 2. Build TypeScript
 npm run build
 
-# 3. Smoke test — proves the local SQLite + provider + hybrid search work
+# 3. Smoke test — proves the local SQLite + provider + hybrid search + chunking work
 node scripts/smoke.mjs
-# Expect: 7 green checks, "smoke test PASSED"
-# The 7th check (semantic) may report "indeterminate" on the FIRST run
-# because Transformers.js is still downloading the ~25MB ONNX model.
-# Re-run and it'll pass.
+# Expect: 10 green checks, "smoke test PASSED"
+# Checks 1–6: CRUD + FTS5. Check 7: semantic search (vector via sqlite-vec).
+# Checks 8–10: chunking (long transcript → many per-turn memories sharing
+# one parent_ref, each with metadata.chunk_index).
+# Check 7 may report "indeterminate" on the FIRST run because Transformers.js
+# is still downloading the ~25MB ONNX model. Re-run and it'll pass.
 
 # 4. Configure installed AI tools — wires mnueron into Claude Code,
 #    Cursor, Cline, Windsurf, Claude Desktop (whichever are present).
 node dist/cli.js setup
 
-# 5. (One-time, only after upgrading from a pre-vector version) backfill
+# 5. (One-time, after upgrading from a pre-chunking version) split existing
+#    oversized memories into per-turn chunks. Run --dry-run first to see plan.
+node dist/cli.js rechunk --dry-run
+node dist/cli.js rechunk
+
+# 6. (One-time, only after upgrading from a pre-vector version) backfill
 #    embeddings for memories that were saved without one.
+node dist/cli.js rebuild-embeddings
+
+# 7. (Optional, when ready to go multi-machine) upload local memories to
+#    a hosted mnueron backend. Idempotent; --dry-run shows the plan first.
+node dist/cli.js migrate-to-hosted --url https://api.your-mnueron.com --token mnu_xxx
 node dist/cli.js rebuild-embeddings
 
 # 6. Run the local dashboard
@@ -60,7 +72,9 @@ mnueron/
 │   │   ├── provider.ts           Provider interface (the contract)
 │   │   ├── local.ts              SQLite + FTS5 + sqlite-vec implementation
 │   │   ├── remote.ts             HTTP client for hosted backend
-│   │   └── embeddings.ts         Transformers.js wrapper — local ONNX embeddings
+│   │   ├── embeddings.ts         Transformers.js wrapper — local ONNX embeddings
+│   │   ├── chunking.ts           Transcript-aware splitter (per turn) + sliding-window fallback
+│   │   └── redactor.ts           Regex-based secret redaction at write time
 │   ├── dashboard/
 │   │   └── server.ts             tiny http.createServer for the local dashboard
 │   ├── import/                   Claude / OpenAI export parsers
@@ -95,6 +109,10 @@ mnueron/
 ├── README.md                     User-facing product overview
 ├── INSTALL.md                    User install guide
 ├── ARCHITECTURE.md               Multi-tenant + threat-model design
+├── LICENSE                       MIT (covers client code by default)
+├── LICENSE-OVERVIEW.md           Plain-English dual-license map (MIT + FSL)
+├── CONTRIBUTING.md               Contribution flow + CLA requirement
+├── CLA.md                        Apache-style Individual Contributor License Agreement
 └── DEVELOPMENT.md                THIS FILE
 ```
 
@@ -119,7 +137,7 @@ node dist/index.js
 node scripts/smoke.mjs
 ```
 
-Seven checks. First run after a `rebuild-embeddings` rebuild or after the
+Eleven checks. First run after a `rebuild-embeddings` rebuild or after the
 ONNX model is cached locally:
 
 ```
@@ -130,6 +148,10 @@ ONNX model is cached locally:
 ✓ delete returned true
 ✓ memory is gone after delete
 ✓ semantic search matched "Kubernetes/canary" content to query "deployment strategy"
+✓ redaction stripped AWS+GitHub keys from saved content (count=2)
+✓ chunking split a long transcript into N per-turn memories
+✓ all chunks share one parent_ref
+✓ all chunks have metadata.chunk_index
 ```
 
 If check 7 says "indeterminate", the model is still downloading — re-run.
@@ -376,15 +398,87 @@ or a windowed slice if the agent doesn't need everything.
 **Symptom:** even with `memory_get` paging, one memory is 300K characters
 because a long claude.ai session was captured as one memory.
 
-**Cause:** the extension's backfill stores each conversation as a single
-memory regardless of length.
+**Cause:** before chunking shipped, the extension's backfill stored each
+conversation as a single memory regardless of length.
 
-**Proper fix (NOT YET DONE):** chunk long captures into ~5–10 atomic
-memories at save time. Each chunk is searchable independently; the
-parent conversation is linked via metadata. See `PLAN.md` Phase 1 #3.
+**Fix (shipped):** auto-chunking. New saves get split into per-turn
+memories at save time via `chunkContent()` in `src/store/chunking.ts`.
+Existing oversized memories get split retroactively via `mnueron rechunk`.
+See §4.15 and §4.16 for the chunking-specific gotchas.
 
-**Current workaround:** the `max_chars` + `offset` paging on `memory_get`
-lets agents read long memories in windows without context blowup.
+### 4.15 Chunking strategy and threshold
+
+Decisions encoded in `src/store/chunking.ts`:
+
+- **`DEFAULT_CHUNK_THRESHOLD = 6000` chars.** Content shorter than this is
+  saved as one memory. Don't lower this aggressively — too-small chunks
+  fragment context badly.
+- **Transcript-aware first.** If content has at least 2 `**Role:**`
+  headers (User / Assistant / Claude / ChatGPT / Gemini / System / Human),
+  split per turn. Each turn becomes one memory with `role:user` or
+  `role:assistant` tags + `metadata.role`.
+- **Sliding-window fallback.** For long unstructured text, split at
+  sentence boundaries (`. `, `.\n`, `! `, `? `, `\n\n`) within the latter
+  half of the max-char window. 200-char overlap so search hits near a
+  boundary still have context.
+- **Orphan merge.** Final chunks shorter than `minChars` (default 80)
+  get folded into the previous chunk so we don't create 30-char orphan
+  memories.
+- **Metadata stamped:** `parent_ref` (the original `source_ref` or a
+  generated `chunked:<uuid>`), `chunk_index`, `chunk_count`, `role`
+  (where applicable). The tag `chunk` is added; `role:user` /
+  `role:assistant` tags too.
+- **Single turn longer than `maxChars`:** sub-chunked via sliding-window,
+  but each sub-chunk preserves the role label of its parent turn.
+
+If you change the threshold or strategy, re-run `mnueron rechunk --force`
+(would need to add the flag — currently the find-oversized query excludes
+memories that already have `chunk_index` set).
+
+### 4.17 Linux-sandbox mount cache hides recent edits — only matters when developing with the Cowork bash tool
+
+**Symptom (developer-facing, not user-facing):** when developing with the
+Cowork agent's `bash` tool, running `wc -l`, `cat`, or `npx tsc` against
+files in the mounted Windows folder shows STALE content for files that
+were modified via the `Edit` tool. The file's timestamp doesn't update;
+the content reflects pre-Edit state. Writes via the `Write` tool DO
+flush correctly (new files appear with current timestamps; existing
+files written full also show new content).
+
+**Why this matters:** mid-session tsc verification can produce alarming
+but false-positive errors. We had a moment in Session 4 where the
+sandbox reported "Unterminated string literal" errors in 5 files; all
+were ghosts. The user's actual Windows files had the correct content,
+which is why `mnueron rechunk` ran successfully against the edited code.
+
+**Resolution:**
+- **Never run `npm run build` from the Linux sandbox to verify** code
+  changes — it will look wrong even when it's right.
+- **Trust the Read tool's view** — it shows what's actually on disk
+  (i.e., what the user will see when they `code .` and look).
+- **For high-confidence verification**, ask the user to run `npm run
+  build` on Windows. That hits the real file via the real Node/tsc.
+
+**Architectural note:** this is a quirk of the agent sandbox's mount,
+not of mnueron's code. Nothing to fix in mnueron itself. Document so
+nobody else burns 20 minutes chasing ghosts.
+
+### 4.16 `findOversizedMemories` excludes already-chunked rows
+
+**Behavior:** the `LocalProvider.findOversizedMemories()` query has
+`AND (meta_json IS NULL OR json_extract(meta_json, '$.chunk_index') IS NULL)`.
+So memories that are already chunks of a larger thread are skipped.
+
+**Why this matters:** running `mnueron rechunk` twice in a row only
+processes memories that have NEVER been chunked. Idempotent and safe.
+The downside is you can't trivially re-chunk under a new strategy —
+you'd need a `--force` flag (not implemented today).
+
+**Note:** `mnueron rechunk` calls `bulkSave()` which goes through the
+chunking path AGAIN. So a 300K memory we split into 50 chunks does NOT
+get those 50 chunks re-split unless individual chunks themselves exceed
+the 6000-char threshold (which is rare since the turn structure already
+caps them).
 
 ---
 
@@ -500,6 +594,184 @@ this is currently the highest-value detector to add (see PLAN.md).
   UX.
 - Open follow-up: backfill chunking (PLAN.md Phase 1 #3) — a 307K chat
   should be ~30 atomic memories, not one giant blob.
+
+### 2026-05-14 — Session 2 (continued): repo + GitHub
+
+- Initialized git repo, pushed to `github.com/randi2160/mnueron` (public,
+  MIT-only LICENSE at that point).
+- Added the user's brand assets at `assets/` (dark promo image as the
+  README header; light version kept around for social-card meta tags later).
+- Lessons: GitHub renders `<picture>` / theme-switched images; for the
+  README header, a logo-only / wordmark-only asset reads much better than
+  the OG-image (which has built-in dark padding for social-card aspect
+  ratios).
+
+### 2026-05-14 — Session 3: Phase 1 #3 — auto-chunking long captures
+
+- The 307K-blob problem couldn't be fixed in the read path alone — the
+  data shape was wrong. Built `src/store/chunking.ts` with
+  transcript-aware splitting (per `**User:**` / `**Assistant:**` turn)
+  with sliding-window fallback for unstructured text. See §4.15.
+- Wired into `LocalProvider.save()` and `bulkSave()` via a
+  `shouldChunk(content)` threshold check (6000 chars). Long content is
+  split before the SQLite insert; each chunk becomes its own memory
+  with `metadata.parent_ref`, `chunk_index`, `chunk_count` stamped.
+- Added `memory_get_thread` MCP tool that returns all chunks of a
+  conversation given either a chunk id (we resolve its parent_ref) or
+  a parent_ref directly. Uses `json_extract(meta_json, '$.parent_ref')`
+  with a `source_ref` fallback so backfilled chats (which used
+  source_ref as the parent identifier) still work.
+- Added `mnueron rechunk` CLI command. Walks every memory over the
+  threshold via `findOversizedMemories()`, splits each into chunks via
+  `bulkSave()`, deletes originals unless `--keep-original` is passed.
+  `--dry-run` shows the plan without writing. The query excludes
+  already-chunked rows so re-running is safe (§4.16).
+- Smoke test extended from 7 to 10 checks: a long transcript-shaped
+  save splits into multiple memories, all sharing one parent_ref, all
+  with chunk_index in metadata.
+- Validated on real data: 115 of the user's 158 backfilled memories
+  were over 6000 chars (73% of the DB). Total content being split:
+  ~19MB. Largest single conversation expanded to 559 chunks. Expected
+  post-rechunk total: ~4,700 atomic memories from the original 158.
+
+### 2026-05-14 — Session 3 (continued): open-core licensing
+
+- Adopted the Sentry pattern after deciding pure MIT exposed too much to
+  cloning. **Client code stays MIT** (`src/`, `dashboard/`, `extension/`,
+  `sdks/`, `examples/`, `scripts/`); **`server/` becomes
+  FSL-1.1-Apache-2.0** (Functional Source License with 2-year
+  auto-conversion to Apache 2.0). License text pulled verbatim from
+  https://fsl.software/
+- Added `LICENSE-OVERVIEW.md` as a plain-English directory map + FAQ
+  for anyone confused by the dual license.
+- Added `CONTRIBUTING.md` describing the contribution flow with a
+  one-time CLA requirement.
+- Added `CLA.md` adapted from Apache's Individual Contributor License
+  Agreement. Out-of-band step: wire up cla-assistant.io to enforce
+  CLA signing on every PR.
+- Updated `README.md` License section with a 2-row comparison table
+  + Contributing pointer.
+- Added a license-notice blockquote at the top of `server/README.md`.
+
+### 2026-05-15 — Session 4: Phase 1 completion (autonomous run)
+
+User went to sleep with rechunk running; this session executed the remaining
+Phase 1 items #4 (premium dashboard), #5 (migration tool), and #6 (secret
+redaction). The rechunk completed mid-session: **9,398 atomic chunks
+created from 115 oversized memories** (averaged ~82 chunks per long chat;
+turn-level splitting catches every back-and-forth). 115 originals deleted.
+
+**Phase 1 #6 — secret redaction at write time:**
+- New `src/store/redactor.ts` — pure module, no DB / no network. 13
+  patterns (AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, Google API +
+  OAuth, mnueron tokens, JWT, URL token params, Authorization Bearer,
+  HTTP basic auth in URLs, PEM private-key blocks).
+- Patterns ordered specific-first; PEM block first so its body can't be
+  misclassified as smaller secrets.
+- Custom `redactWith` callbacks for url_token_param, authorization_bearer,
+  url_basic_auth — these preserve the structure (e.g. `token=`) and only
+  redact the secret value.
+- Wired via `preSaveTransform()` in `LocalProvider.save()` and `bulkSave()`,
+  running BEFORE chunking. Stamps `metadata.redacted_count` and
+  `redacted_kinds`.
+- Smoke test extended with a redaction assertion (saves a known
+  AWS+GitHub key pair and confirms both are stripped).
+- Out of scope: generic high-entropy scanner (too many false positives on
+  hashes/UUIDs/base64); reversal (we never store the original).
+
+**Phase 1 #5 — migration tool local → hosted:**
+- New `mnueron migrate-to-hosted --url --token [--batch] [--namespace]
+  [--dry-run] [--no-flip]` CLI subcommand.
+- Forces local mode regardless of env vars so users can't accidentally
+  hosted-to-hosted. Pings `/health` on the target before uploading.
+  Streams memories in batches (default 100) to `/v1/memories/bulk` with
+  Bearer auth. Progress bar over total.
+- On successful completion (no errors, no --no-flip): writes
+  `~/.mnueron/config.json` with `apiUrl` and `apiToken` so the next
+  process boot reads from hosted. Restart-required for active processes
+  (MCP server subprocess, dashboard).
+- `src/config.ts` updated to read config.json as a fallback to env vars
+  (env still wins). This is how the "flip" sticks across shells.
+- Manual-paste-token version for v1; the OAuth-style callback flow
+  (open browser → user signs up → token captured automatically) waits
+  on the hosted dashboard existing (Phase 2 work).
+
+**Phase 1 #4 — premium dashboard rebuild:**
+- Complete rewrite of `dashboard/index.html` (~1000 lines, single file,
+  no build step).
+- Three-pane CSS Grid: rail / list / detail. Both pane widths resizable
+  via drag handles, persisted to localStorage as `--rail-w` / `--detail-w`.
+- **Browse mode** (no search query): middle pane shows *threads* — one row
+  per `parent_ref` group. Standalone (non-chunked) memories also appear
+  as single-row threads (their id serves as the group key).
+- **Search mode** (with query): middle pane shows *individual memories*
+  (chunks or standalone), each labeled with its namespace/role/tags/score.
+  Clicking a chunk loads it, with a "Show full thread" button to jump
+  to the parent.
+- Chat-bubble rendering for thread detail view: each chunk = one bubble
+  with role pill (User/Assistant), timestamp, Markdown-rendered content,
+  Prism-highlighted code blocks (via CDN, autoloader).
+- Light + dark theme toggle (CSS custom properties; switched via
+  `data-theme` attribute on `<html>`; persisted to localStorage).
+- Keyboard shortcut: `/` focuses search.
+- Drag-drop import preserved.
+- Backend additions:
+  - `LocalProvider.listThreads({ namespace, limit, offset })` —
+    groups memories by `COALESCE(json_extract(meta_json,
+    '$.parent_ref'), id)`. Returns parent_ref, namespace, count,
+    first_at, last_at, has_chunks, and a `title` extracted from the
+    lowest-`chunk_index` member's content.
+  - `extractTitle(content)` in local.ts — prefers `# Heading`, falls
+    back to first non-empty line, truncates at 100 chars.
+  - `GET /api/threads` and `GET /api/threads/:parent_ref` on the
+    dashboard server.
+- **Redaction surfacing:** the detail header shows `N secrets redacted`
+  badge when `metadata.redacted_count > 0`. Closes the loop with #6.
+
+**Validation:**
+- Smoke test (now 11 checks including redaction) intended to pass on a
+  clean rebuild. Real DB validation waits on user wake-up — `npm run
+  build` + `node scripts/smoke.mjs` + open `node dist/cli.js dashboard`.
+- Rechunk completion captured: 9,398 chunks from 115 originals + 43
+  originally-small memories = ~9,441 memories total post-rechunk.
+
+**Gotcha discovered: Linux mount cache vs. Edit operations.**
+The bash sandbox uses a network/FUSE mount of the Windows host folder.
+Writes through the `Write` tool flush correctly (visible in mount with
+new timestamps). Writes through the `Edit` tool DO flush to the user's
+Windows file (confirmed by user running rechunk successfully against
+edited code), but DO NOT invalidate the mount's read cache — so
+subsequent `wc`, `cat`, or `npx tsc` against the mount sees stale
+content. This produced spurious TypeScript "errors" mid-session that
+looked alarming but were actually against a pre-edit file view. The
+fix: I re-wrote tools.ts via Write to force a flush. The deeper
+lesson: **don't trust the Linux bash sandbox to verify edits via
+compile/test in this session's filesystem layout.** Trust the Read
+tool (which sees the current intended state) and tell the user to
+run `npm run build` on Windows for ground truth. Documented in §4.17.
+
+**Open follow-ups:**
+- User to run `npm run build` first thing — confirm no real compile errors
+  exist beyond the stale-mount false positives.
+- User to run `node scripts/smoke.mjs` — should now have 11 green checks
+  (added redaction).
+- User to launch `node dist/cli.js dashboard` and verify the new three-pane
+  UI loads against the post-rechunk 9,441-memory DB.
+- User to confirm threads display correctly (115ish thread rows in the
+  middle pane when no search query).
+- If anything is broken on real-world data: errors will be visible in
+  browser DevTools console; paste them to me and I fix.
+
+### Convention for future sessions
+
+Every session ends with an entry in this log. Pattern:
+1. What we shipped (1-line bullets — feature, file, behavior).
+2. Any non-obvious bugs encountered (add detailed entries to §4 too).
+3. Validation evidence (numbers, file paths, what we tested with).
+4. Open follow-ups that didn't make it into the session.
+
+Skip none of the four. The log is what makes onboarding a new
+contributor 30 minutes instead of 3 days.
 
 ---
 

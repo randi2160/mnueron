@@ -30,6 +30,8 @@ async function main() {
     case 'namespaces':   return cmdNamespaces();
     case 'dashboard':    return cmdDashboard(rest);
     case 'rebuild-embeddings': return cmdRebuildEmbeddings(rest);
+    case 'rechunk':      return cmdRechunk(rest);
+    case 'migrate-to-hosted': return cmdMigrateToHosted(rest);
     case 'help':
     case '--help':
     case '-h':
@@ -63,6 +65,17 @@ Commands:
   mnueron rebuild-embeddings      Generate vector embeddings for memories saved
                                   before semantic-search support was added. Run
                                   once after upgrading to v0.2+.
+  mnueron rechunk                 Split existing oversized memories (long backfilled
+       [--threshold <n>]            chats) into per-turn atomic memories. Improves
+       [--keep-original]            search granularity. Run once after first backfill.
+       [--dry-run]
+  mnueron migrate-to-hosted       Upload your local SQLite memories to a hosted
+       --url <https://...>          mnueron backend. Idempotent via source_ref dedup.
+       --token <mnu_...>            After completion, optionally flips the active provider
+       [--batch <n>]                so all subsequent reads/writes go to hosted.
+       [--namespace <name>]         Filter to one namespace if you only want a subset.
+       [--dry-run]
+       [--no-flip]                  Upload but don't change the active provider.
 
 Environment:
   MNUERON_DB_PATH    Local SQLite location (default: ~/.mnueron/memories.db)
@@ -257,6 +270,260 @@ async function cmdDashboard(args: string[]) {
   process.on('SIGTERM', shutdown);
   // wait forever
   await new Promise(() => {});
+}
+
+async function cmdRechunk(args: string[]) {
+  let threshold = 6000;
+  let keepOriginal = false;
+  let dryRun = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--threshold' && args[i + 1]) {
+      threshold = parseInt(args[++i], 10) || 6000;
+    } else if (args[i] === '--keep-original') {
+      keepOriginal = true;
+    } else if (args[i] === '--dry-run') {
+      dryRun = true;
+    }
+  }
+
+  const provider = makeProvider(loadConfig()) as any;
+  if (typeof provider.findOversizedMemories !== 'function') {
+    console.error('rechunk only supported in local mode.');
+    process.exit(1);
+  }
+
+  const rows = provider.findOversizedMemories(threshold);
+  if (rows.length === 0) {
+    console.log(`\n  ✓ No memories larger than ${threshold} chars. Nothing to do.\n`);
+    await provider.close();
+    return;
+  }
+
+  // Sum bytes for the report
+  const totalChars = rows.reduce((s: number, r: any) => s + (r.content?.length ?? 0), 0);
+  console.log(`\n  🔪  Rechunk plan`);
+  console.log(`      ${rows.length} memories over ${threshold} chars`);
+  console.log(`      total content: ${(totalChars / 1024).toFixed(1)} KB`);
+  console.log(`      strategy: transcript-aware split (per-turn) with sliding-window fallback`);
+  console.log(`      mode: ${dryRun ? 'DRY RUN (no writes)' : keepOriginal ? 'split + keep originals' : 'split + delete originals'}\n`);
+
+  const { chunkContent } = await import('./store/chunking.js');
+
+  let oversize = 0, chunksMade = 0, deleted = 0, errors = 0;
+  for (const row of rows) {
+    oversize++;
+    const chunks = chunkContent(row.content);
+    if (chunks.length < 2) {
+      // Couldn't split — content has no transcript shape AND fits the
+      // sliding window. Skip rather than create a single useless duplicate.
+      continue;
+    }
+    process.stdout.write(`  [${oversize}/${rows.length}] ${row.id.slice(0, 8)}… → ${chunks.length} chunks`);
+
+    if (dryRun) {
+      console.log(' (dry run)');
+      continue;
+    }
+
+    try {
+      const tags = JSON.parse(row.tags_json ?? '[]');
+      const meta = row.meta_json ? JSON.parse(row.meta_json) : {};
+      const parentRef = row.source_ref ?? `chunked:${row.id}`;
+
+      // Build inputs for bulkSave
+      const inputs = chunks.map((c, i) => ({
+        content: c.content,
+        namespace: row.namespace,
+        tags: [...tags, 'chunk', 'rechunked', ...(c.role ? [`role:${c.role}`] : [])],
+        source: row.source,
+        source_ref: parentRef,
+        metadata: {
+          ...meta,
+          parent_ref: parentRef,
+          chunk_index: i,
+          chunk_count: chunks.length,
+          ...(c.role ? { role: c.role } : {}),
+          original_id: row.id,
+          original_created_at: row.created_at,
+        },
+      }));
+
+      await provider.bulkSave(inputs);
+      chunksMade += chunks.length;
+
+      if (!keepOriginal) {
+        await provider.delete(row.id);
+        deleted++;
+      }
+      console.log(' ✓');
+    } catch (e: any) {
+      errors++;
+      console.log(` ✗ ${e?.message ?? e}`);
+    }
+  }
+
+  console.log(`\n  Done.`);
+  console.log(`      ${chunksMade} new chunked memories created`);
+  if (!dryRun && !keepOriginal) console.log(`      ${deleted} originals deleted`);
+  if (errors > 0) console.log(`      ${errors} errors`);
+  console.log(`\n  Next: run 'mnueron rebuild-embeddings' so the new chunks have vectors.\n`);
+  await provider.close();
+}
+
+async function cmdMigrateToHosted(args: string[]) {
+  let url = '';
+  let token = '';
+  let batch = 100;
+  let namespace: string | undefined;
+  let dryRun = false;
+  let noFlip = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--url' && args[i + 1]) url = args[++i];
+    else if (args[i] === '--token' && args[i + 1]) token = args[++i];
+    else if (args[i] === '--batch' && args[i + 1]) batch = parseInt(args[++i], 10) || 100;
+    else if (args[i] === '--namespace' && args[i + 1]) namespace = args[++i];
+    else if (args[i] === '--dry-run') dryRun = true;
+    else if (args[i] === '--no-flip') noFlip = true;
+  }
+
+  if (!url || !token) {
+    console.error(`Usage: mnueron migrate-to-hosted --url <https://api.mnueron.com> --token <mnu_...>`);
+    console.error(`Tip: sign up at the hosted dashboard to get your token, then paste here.`);
+    process.exit(1);
+  }
+
+  // We migrate FROM local. Force local mode regardless of env vars so the
+  // user can't accidentally migrate hosted-to-hosted.
+  process.env.MNUERON_API_URL = '';
+  process.env.MNUERON_API_TOKEN = '';
+  const cfg = loadConfig();
+  if (cfg.mode !== 'local') {
+    console.error('migrate-to-hosted reads FROM local mode. Got mode=' + cfg.mode);
+    process.exit(1);
+  }
+  const provider = makeProvider(cfg);
+
+  // Pull every memory from local
+  const namespaces = await provider.namespaces();
+  const total = namespace
+    ? (namespaces.find(n => n.name === namespace)?.count ?? 0)
+    : namespaces.reduce((s, n) => s + n.count, 0);
+
+  console.log(`\n  🚀  mnueron migrate-to-hosted`);
+  console.log(`      source:  local SQLite (${total} memories${namespace ? ` in namespace ${namespace}` : ''})`);
+  console.log(`      target:  ${url}`);
+  console.log(`      batch:   ${batch}`);
+  console.log(`      mode:    ${dryRun ? 'DRY RUN (no writes)' : 'live upload'}\n`);
+
+  if (total === 0) {
+    console.log(`  Nothing to migrate.`);
+    await provider.close();
+    return;
+  }
+
+  // Ping the target first
+  if (!dryRun) {
+    try {
+      const ping = await fetch(`${url.replace(/\/+$/, '')}/health`);
+      if (!ping.ok) throw new Error(`/health returned ${ping.status}`);
+    } catch (e: any) {
+      console.error(`Cannot reach ${url}/health: ${e.message}`);
+      console.error(`Check the URL and that the hosted backend is running.`);
+      await provider.close();
+      process.exit(1);
+    }
+  }
+
+  // Stream memories in chunks of `batch`, oldest first, so the hosted side
+  // ends up with chronological order in dashboards.
+  let cursor: number | undefined;
+  let uploaded = 0, failed = 0;
+  const start = Date.now();
+
+  while (true) {
+    const page = await provider.list({
+      namespace,
+      limit: batch,
+      before: cursor,
+    });
+    if (page.length === 0) break;
+    // list() returns DESC; we want to upload oldest first, but the hosted
+    // side will reorder on display anyway, so just upload as-is.
+
+    if (!dryRun) {
+      try {
+        const items = page.map(m => ({
+          content: m.content,
+          namespace: m.namespace,
+          tags: m.tags,
+          source: m.source,
+          source_ref: m.source_ref,
+          metadata: m.metadata,
+        }));
+        const res = await fetch(`${url.replace(/\/+$/, '')}/v1/memories/bulk`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ items }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          throw new Error(`${res.status} ${res.statusText}${body ? `: ${body.slice(0, 200)}` : ''}`);
+        }
+        const data: any = await res.json().catch(() => ({}));
+        uploaded += (data.saved ?? page.length);
+        failed += (data.errors ?? 0);
+      } catch (e: any) {
+        failed += page.length;
+        console.error(`  batch failed at cursor=${cursor}: ${e.message}`);
+        // Stop on transport error so we don't retry forever
+        if (`${e.message}`.includes('ECONNREFUSED') || `${e.message}`.includes('Cannot reach')) break;
+      }
+    } else {
+      uploaded += page.length;
+    }
+
+    cursor = page[page.length - 1].created_at;
+    const pct = Math.round((uploaded + failed) / total * 100);
+    process.stdout.write(`\r  [${'█'.repeat(Math.floor(pct / 4)).padEnd(25, '░')}] ${pct}%  ${uploaded + failed}/${total}`);
+
+    if (page.length < batch) break;
+  }
+  process.stdout.write('\n');
+
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  console.log(`\n  ✓ Done in ${elapsed}s — ${uploaded} uploaded${failed ? `, ${failed} failed` : ''}.\n`);
+
+  if (!dryRun && !noFlip && failed === 0) {
+    await writeActiveProvider(url, token);
+    console.log(`  🔁  Active provider switched to hosted.`);
+    console.log(`      ~/.mnueron/config.json updated with MNUERON_API_URL + MNUERON_API_TOKEN.`);
+    console.log(`      Restart any running mnueron processes (Claude Code, dashboard) to pick up the change.\n`);
+  } else if (noFlip) {
+    console.log(`  ℹ️  --no-flip set: active provider stays on local.`);
+    console.log(`      Set MNUERON_API_URL=${url} and MNUERON_API_TOKEN=<your token> in your shell when ready.\n`);
+  }
+
+  await provider.close();
+}
+
+async function writeActiveProvider(url: string, token: string) {
+  const { writeFile, mkdir } = await import('node:fs/promises');
+  const { homedir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = join(homedir(), '.mnueron');
+  await mkdir(dir, { recursive: true });
+  const configPath = join(dir, 'config.json');
+  let existing: any = {};
+  try {
+    const { readFile } = await import('node:fs/promises');
+    existing = JSON.parse(await readFile(configPath, 'utf8'));
+  } catch { /* fresh */ }
+  existing.apiUrl = url;
+  existing.apiToken = token;
+  await writeFile(configPath, JSON.stringify(existing, null, 2), 'utf8');
 }
 
 async function openInBrowser(url: string) {

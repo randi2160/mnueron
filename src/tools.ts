@@ -72,9 +72,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'memory_get',
     description:
-      'Fetch a memory by id. Default returns up to 8000 characters — enough for most chats but small enough to stay context-safe. ' +
-      'For long memories, set `max_chars` higher, or use `offset` + `max_chars` to page through. ' +
-      'A 320KB chat is normal for backfilled web conversations; you probably want max_chars ~4000 and to use the preview/full_length from memory_recall to decide whether to page.',
+      'Fetch a memory by id. Default returns up to 8000 characters. For long memories, set max_chars higher, or use offset + max_chars to page through.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -86,10 +84,24 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'memory_get_thread',
+    description:
+      'Fetch every chunk of a chunked conversation, ordered by position. Use this after memory_recall returns a chunk and you want the full thread context. Pass either the chunk id (we will resolve its parent_ref) or the parent_ref directly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id_or_parent_ref: {
+          type: 'string',
+          description: 'A chunk id from memory_recall, OR a parent_ref value from metadata.parent_ref.',
+        },
+      },
+      required: ['id_or_parent_ref'],
+    },
+  },
+  {
     name: 'memory_list',
     description:
-      'List recent memories. Returns PREVIEWS only — call memory_get(id) for full content. ' +
-      'Default limit 20, max 100. Use for browsing a namespace.',
+      'List recent memories. Returns PREVIEWS only — call memory_get(id) for full content. Default limit 20, max 100. Use for browsing a namespace.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -116,7 +128,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'memory_import_chat',
     description:
-      'Import past conversations into memory. Accepts a path to a Claude conversation export (conversations.json from claude.ai data export) or an OpenAI conversations export. Each conversation becomes a memory.',
+      'Import past conversations into memory. Accepts a path to a Claude conversation export or an OpenAI conversations export. Each conversation becomes a memory.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -124,7 +136,7 @@ export const TOOL_DEFINITIONS = [
         format: {
           type: 'string',
           enum: ['claude', 'openai', 'auto'],
-          description: 'Source format. "auto" sniffs by file content.',
+          description: 'Source format. auto sniffs by file content.',
         },
         namespace: { type: 'string', description: 'Target namespace for imported memories.' },
         summarize: {
@@ -184,6 +196,21 @@ export async function handleToolCall(
         content_next_offset: truncated ? offset + slice.length : null,
       };
     }
+    case 'memory_get_thread': {
+      const idOrRef = String(args.id_or_parent_ref ?? '');
+      if (!idOrRef) throw new Error('id_or_parent_ref is required');
+      const findThread = (provider as any).findThread;
+      if (typeof findThread !== 'function') {
+        throw new Error('memory_get_thread is only supported in local mode for now');
+      }
+      const chunks = findThread.call(provider, idOrRef) as Memory[];
+      if (chunks.length === 0) return { chunks: [], count: 0 };
+      return {
+        count: chunks.length,
+        parent_ref: chunks[0].source_ref ?? null,
+        chunks: chunks.map(toPreview),
+      };
+    }
     case 'memory_list': {
       const limit = Math.min(100, Math.max(1, (args.limit as number) ?? 20));
       const memories = await provider.list({
@@ -226,10 +253,7 @@ export async function handleToolCall(
 async function sniffFormat(path: string): Promise<string> {
   const { readFile } = await import('node:fs/promises');
   const head = (await readFile(path, 'utf8')).slice(0, 4000);
-  // Claude export wraps each chat in `{ uuid, name, chat_messages: [...] }`
-  // OpenAI export uses `{ id, title, mapping: { ... } }` (tree-shaped)
   if (head.includes('"chat_messages"')) return 'claude';
   if (head.includes('"mapping"')) return 'openai';
-  // Fallback to Claude (newer exports may use slightly different keys)
   return 'claude';
 }

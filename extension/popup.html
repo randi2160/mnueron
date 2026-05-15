@@ -103,11 +103,21 @@
   <a href="#" id="open-options" class="settings">Settings</a>
 </header>
 
-<section>
+<section id="capture-section">
   <div class="site" id="site-line">Detecting page…</div>
   <button id="capture-btn" disabled>Capture chat</button>
   <button class="secondary" id="open-dashboard">Open dashboard</button>
   <div class="toast" id="toast"></div>
+</section>
+
+<section id="unsupported-section" style="display:none">
+  <div class="site">
+    <span class="name">Not on a chat site.</span>
+    Open one to capture a conversation:
+  </div>
+  <button class="secondary" data-go="https://claude.ai">Open Claude.ai →</button>
+  <button class="secondary" data-go="https://chatgpt.com">Open ChatGPT →</button>
+  <button class="secondary" id="open-dashboard-alt">Open dashboard</button>
 </section>
 
 <section id="backfill-section" style="display:none">

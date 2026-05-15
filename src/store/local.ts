@@ -4,9 +4,32 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 import { embed, embedBatch, EMBEDDING_DIM, preload } from './embeddings.js';
+import { chunkContent, shouldChunk, DEFAULT_CHUNK_THRESHOLD } from './chunking.js';
+import { redact } from './redactor.js';
 import type {
   Provider, Memory, SaveMemoryInput, SearchInput, ListInput, NamespaceInfo,
 } from './provider.js';
+
+/**
+ * Run pre-save transforms in fixed order:
+ *   1. Redact secrets — never store API keys / JWTs / etc.
+ *   2. (Later) plugin processors can hook here.
+ * Returns the (possibly modified) input. Metadata is augmented with
+ * `redacted_count` and `redacted_kinds` when redaction fired.
+ */
+function preSaveTransform(input: SaveMemoryInput): SaveMemoryInput {
+  const r = redact(input.content);
+  if (r.count === 0) return input;
+  return {
+    ...input,
+    content: r.content,
+    metadata: {
+      ...(input.metadata ?? {}),
+      redacted_count: r.count,
+      redacted_kinds: r.kinds,
+    },
+  };
+}
 
 // Stop words dropped from FTS5 queries before they hit the index. We keep
 // this list small and English-only on purpose — every word we drop is a
@@ -45,6 +68,28 @@ function buildFtsQuery(raw: string): string {
 // Reciprocal-rank-fusion constant. 60 is the value the literature uses and
 // is what both Elasticsearch and our hosted-backend already use.
 const RRF_K = 60;
+
+/**
+ * Pull a human-readable title out of a memory's content. Used by
+ * `listThreads` to label conversations in the dashboard.
+ * Strategy: prefer the first `# Heading`, then the first non-empty line,
+ * then a sentence-aware truncation at 100 chars.
+ */
+function extractTitle(content: string): string {
+  if (!content) return '(empty)';
+  const trimmed = content.trim();
+  // Markdown H1 / H2 anywhere near the top
+  const hMatch = trimmed.slice(0, 600).match(/^#{1,3}\s+(.+)$/m);
+  if (hMatch) return hMatch[1].trim().slice(0, 100);
+  // Strip role-header markdown if present
+  const firstLine = trimmed.split(/\r?\n/).map(s => s.trim()).find(Boolean) ?? trimmed;
+  const noRole = firstLine.replace(/^\*\*(?:User|Assistant|Claude|ChatGPT|Gemini|System|Human):\*\*\s*/i, '');
+  if (noRole.length <= 100) return noRole;
+  // Otherwise: cut at sentence boundary near 100 chars
+  const cut = noRole.slice(0, 100);
+  const lastDot = cut.lastIndexOf('. ');
+  return (lastDot > 40 ? cut.slice(0, lastDot + 1) : cut).trim() + '…';
+}
 
 /**
  * Local SQLite provider. Uses FTS5 for keyword search (ships with SQLite)
@@ -128,6 +173,22 @@ export class LocalProvider implements Provider {
   // ─── write path ──────────────────────────────────────────────────────────
 
   async save(input: SaveMemoryInput): Promise<Memory> {
+    // 1. Redact secrets BEFORE chunking — so partial secret tokens at chunk
+    //    boundaries can't slip through. Single source of truth for what
+    //    hits SQLite.
+    const transformed = preSaveTransform(input);
+    // 2. Long content gets auto-chunked into multiple memories. Each chunk
+    //    becomes a searchable atomic memory; the original conversation is
+    //    linkable via `parent_ref` (= source_ref + chunk_index in metadata).
+    if (shouldChunk(transformed.content)) {
+      const result = await this.saveChunked(transformed);
+      return result.first;
+    }
+    return this.saveOne(transformed);
+  }
+
+  /** Save a single, non-chunked memory. The common path. */
+  private async saveOne(input: SaveMemoryInput): Promise<Memory> {
     const now = Date.now();
     const id = randomUUID();
     const ns = input.namespace ?? 'default';
@@ -171,15 +232,141 @@ export class LocalProvider implements Provider {
     });
   }
 
+  /**
+   * Split long content into chunks and save each as a separate memory.
+   * Each chunk carries metadata.parent_ref + chunk_index so the agent
+   * (or the dashboard) can reassemble the original thread.
+   */
+  private async saveChunked(input: SaveMemoryInput): Promise<{ first: Memory; count: number }> {
+    const chunks = chunkContent(input.content);
+    if (chunks.length === 0) return { first: await this.saveOne(input), count: 1 };
+    if (chunks.length === 1) return { first: await this.saveOne(input), count: 1 };
+
+    // The parent reference: prefer the caller's source_ref if present, else
+    // generate a stable id so siblings can find each other.
+    const parentRef = input.source_ref ?? `chunked:${randomUUID()}`;
+    const total = chunks.length;
+    const baseTags = input.tags ?? [];
+
+    const saves = chunks.map((c, i) => ({
+      content: c.content,
+      namespace: input.namespace,
+      tags: [...baseTags, 'chunk', ...(c.role ? [`role:${c.role}`] : [])],
+      source: input.source ?? 'manual',
+      source_ref: parentRef,
+      metadata: {
+        ...(input.metadata ?? {}),
+        parent_ref: parentRef,
+        chunk_index: i,
+        chunk_count: total,
+        ...(c.role ? { role: c.role } : {}),
+      },
+    }));
+
+    const result = await this.bulkSaveOne(saves);
+    if (result.length === 0) {
+      // Shouldn't happen, but fall back gracefully.
+      return { first: await this.saveOne(input), count: 1 };
+    }
+    return { first: result[0], count: result.length };
+  }
+
+  /** Internal: bulkSave-like path that returns Memory[] rather than counts. */
+  private async bulkSaveOne(inputs: SaveMemoryInput[]): Promise<Memory[]> {
+    const vectors = this.vecAvailable ? await embedBatch(inputs.map(i => i.content)) : inputs.map(() => null);
+    const out: Memory[] = [];
+    const insertMem = this.db.prepare(`
+      INSERT INTO memories (id, namespace, content, tags_json, source, source_ref, meta_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertFts = this.db.prepare(`
+      INSERT INTO memories_fts (content, tags, namespace, content_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    const insertVec = this.vecAvailable
+      ? this.db.prepare(`INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)`)
+      : null;
+
+    const tx = this.db.transaction((items: SaveMemoryInput[]) => {
+      for (let i = 0; i < items.length; i++) {
+        const input = items[i];
+        const id = randomUUID();
+        const now = Date.now();
+        const ns = input.namespace ?? 'default';
+        const tags = input.tags ?? [];
+        const metaJson = input.metadata ? JSON.stringify(input.metadata) : null;
+        insertMem.run(
+          id, ns, input.content, JSON.stringify(tags),
+          input.source ?? 'manual',
+          input.source_ref ?? null,
+          metaJson,
+          now, now,
+        );
+        insertFts.run(input.content, tags.join(' '), ns, id);
+        const vec = vectors[i];
+        if (vec && insertVec) {
+          insertVec.run(id, Buffer.from(vec.buffer));
+        }
+        out.push(this.rowToMemory({
+          id, namespace: ns, content: input.content,
+          tags_json: JSON.stringify(tags),
+          source: input.source ?? 'manual',
+          source_ref: input.source_ref ?? null,
+          meta_json: metaJson,
+          created_at: now, updated_at: now,
+        }));
+      }
+    });
+    tx(inputs);
+    return out;
+  }
+
   async bulkSave(inputs: SaveMemoryInput[]) {
     let saved = 0, errors = 0;
 
-    // Pre-compute embeddings for the whole batch in one go — much faster
-    // than calling embed() N times because Transformers.js batches the
-    // forward pass.
+    // 1. Redact secrets up front, same as save().
+    const redactedInputs = inputs.map(preSaveTransform);
+
+    // 2. Expand long inputs into per-chunk memories before we save. A backfill
+    // of 50 chats where each is 100KB becomes ~500 small memories,
+    // searchable independently. The original conversation is linkable via
+    // metadata.parent_ref.
+    const expanded: SaveMemoryInput[] = [];
+    for (const input of redactedInputs) {
+      if (shouldChunk(input.content)) {
+        const chunks = chunkContent(input.content);
+        if (chunks.length > 1) {
+          const parentRef = input.source_ref ?? `chunked:${randomUUID()}`;
+          const baseTags = input.tags ?? [];
+          for (let i = 0; i < chunks.length; i++) {
+            const c = chunks[i];
+            expanded.push({
+              content: c.content,
+              namespace: input.namespace,
+              tags: [...baseTags, 'chunk', ...(c.role ? [`role:${c.role}`] : [])],
+              source: input.source ?? 'manual',
+              source_ref: parentRef,
+              metadata: {
+                ...(input.metadata ?? {}),
+                parent_ref: parentRef,
+                chunk_index: i,
+                chunk_count: chunks.length,
+                ...(c.role ? { role: c.role } : {}),
+              },
+            });
+          }
+          continue;
+        }
+      }
+      expanded.push(input);
+    }
+
+    // Pre-compute embeddings for the whole (expanded) batch in one go —
+    // much faster than calling embed() N times because Transformers.js
+    // batches the forward pass.
     const vectors = this.vecAvailable
-      ? await embedBatch(inputs.map(i => i.content))
-      : inputs.map(() => null);
+      ? await embedBatch(expanded.map(i => i.content))
+      : expanded.map(() => null);
 
     const insertMem = this.db.prepare(`
       INSERT INTO memories (id, namespace, content, tags_json, source, source_ref, meta_json, created_at, updated_at)
@@ -219,7 +406,7 @@ export class LocalProvider implements Provider {
         }
       }
     });
-    tx(inputs);
+    tx(expanded);
     return { saved, errors };
   }
 
@@ -461,6 +648,132 @@ export class LocalProvider implements Provider {
     sql += ` LIMIT 1`;
     const row = this.db.prepare(sql).get(...params) as any;
     return row ? this.rowToMemory(row) : null;
+  }
+
+  /**
+   * Return every chunk of a thread (i.e. every memory whose
+   * metadata.parent_ref matches), ordered by chunk_index. Used by
+   * `memory_get_thread` so agents can reassemble a long conversation
+   * after finding one relevant turn via memory_recall.
+   *
+   * `parentRef` can be either the literal parent_ref value or any chunk's
+   * memory id (we look up parent_ref from that chunk's metadata first).
+   */
+  findThread(parentRef: string): Memory[] {
+    // If the caller passed a memory id, resolve to its parent_ref first.
+    let ref = parentRef;
+    const maybeChild = this.db.prepare(`SELECT meta_json FROM memories WHERE id = ?`).get(parentRef) as any;
+    if (maybeChild?.meta_json) {
+      try {
+        const meta = JSON.parse(maybeChild.meta_json);
+        if (typeof meta?.parent_ref === 'string') ref = meta.parent_ref;
+      } catch { /* ignore */ }
+    }
+    // Now fetch every memory whose metadata.parent_ref equals ref.
+    // JSON field path syntax: json_extract(meta_json, '$.parent_ref')
+    const rows = this.db.prepare(`
+      SELECT *
+      FROM memories
+      WHERE json_extract(meta_json, '$.parent_ref') = ?
+      ORDER BY COALESCE(json_extract(meta_json, '$.chunk_index'), 0) ASC, created_at ASC
+    `).all(ref) as any[];
+    // Also try a fallback against source_ref for memories chunked via
+    // source_ref-as-parent_ref (this is the common case for backfills).
+    if (rows.length === 0) {
+      const alt = this.db.prepare(`
+        SELECT *
+        FROM memories
+        WHERE source_ref = ?
+        ORDER BY COALESCE(json_extract(meta_json, '$.chunk_index'), 0) ASC, created_at ASC
+      `).all(ref) as any[];
+      return alt.map(r => this.rowToMemory(r));
+    }
+    return rows.map(r => this.rowToMemory(r));
+  }
+
+  /**
+   * List "threads" — distinct conversations as represented by their
+   * parent_ref. Each row in the output represents a conversation that the
+   * dashboard can render collapsed (one row = one conversation, expandable
+   * into per-turn chunks).
+   *
+   * Returns: { parent_ref, namespace, count, first_at, last_at, title }
+   * — `title` is the content preview of the lowest-chunk_index member
+   * (usually the human-readable header at the top of a transcript).
+   */
+  listThreads(opts: { namespace?: string; limit?: number; offset?: number } = {}): Array<{
+    parent_ref: string;
+    namespace: string;
+    count: number;
+    first_at: number;
+    last_at: number;
+    title: string;
+    has_chunks: boolean;
+  }> {
+    const limit = opts.limit ?? 100;
+    const offset = opts.offset ?? 0;
+    // We use COALESCE(parent_ref-from-metadata, id) as the bucket key so
+    // standalone (non-chunked) memories show up as single-row threads too.
+    const sql = `
+      WITH grouped AS (
+        SELECT
+          COALESCE(json_extract(meta_json, '$.parent_ref'), id) AS pref,
+          namespace,
+          COUNT(*)                  AS cnt,
+          MIN(created_at)           AS first_at,
+          MAX(updated_at)           AS last_at,
+          SUM(CASE WHEN json_extract(meta_json, '$.chunk_index') IS NOT NULL THEN 1 ELSE 0 END) AS chunked_n
+        FROM memories
+        ${opts.namespace ? 'WHERE namespace = ?' : ''}
+        GROUP BY pref, namespace
+      )
+      SELECT
+        g.pref AS parent_ref,
+        g.namespace,
+        g.cnt   AS count,
+        g.first_at,
+        g.last_at,
+        g.chunked_n > 0 AS has_chunks,
+        (
+          SELECT m.content
+          FROM memories m
+          WHERE COALESCE(json_extract(m.meta_json, '$.parent_ref'), m.id) = g.pref
+            AND m.namespace = g.namespace
+          ORDER BY COALESCE(json_extract(m.meta_json, '$.chunk_index'), 0) ASC, m.created_at ASC
+          LIMIT 1
+        ) AS title_source
+      FROM grouped g
+      ORDER BY g.last_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    const params: unknown[] = opts.namespace ? [opts.namespace, limit, offset] : [limit, offset];
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+      parent_ref: r.parent_ref,
+      namespace: r.namespace,
+      count: r.count,
+      first_at: r.first_at ?? 0,
+      last_at: r.last_at ?? 0,
+      title: extractTitle(r.title_source ?? ''),
+      has_chunks: !!r.has_chunks,
+    }));
+  }
+
+  /**
+   * Find memories whose content exceeds `threshold` chars — i.e. ones that
+   * predate chunking. Used by `mnueron rechunk` to backfill the new shape.
+   */
+  findOversizedMemories(threshold = DEFAULT_CHUNK_THRESHOLD): Array<{ id: string; content: string; namespace: string; tags_json: string; source: string; source_ref: string | null; meta_json: string | null; created_at: number; }> {
+    return this.db.prepare(`
+      SELECT id, content, namespace, tags_json, source, source_ref, meta_json, created_at
+      FROM memories
+      WHERE LENGTH(content) > ?
+        AND (
+          meta_json IS NULL
+          OR json_extract(meta_json, '$.chunk_index') IS NULL
+        )
+      ORDER BY LENGTH(content) DESC
+    `).all(threshold) as any[];
   }
 
   private rowToMemory(row: any, score?: number): Memory {

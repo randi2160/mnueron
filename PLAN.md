@@ -391,21 +391,43 @@ the optional hosted upgrade they don't.
 
 Phases reflect both engineering risk and product value.
 
-### Phase 1 — Polish foundation + close biggest gap (2–3 sessions)
+### Phase 1 — Polish foundation + close biggest gap ✅ COMPLETE
 
-1. **Local semantic search via Transformers.js or sentence-transformers
-   bundle.** Closes the #1 gap vs agentmemory. Local, no API calls.
-   **✓ shipped** — Transformers.js + sqlite-vec + RRF fusion, 158 memories indexed.
+1. **Local semantic search via Transformers.js.** ✓ shipped —
+   Transformers.js + sqlite-vec + RRF fusion, all-MiniLM-L6-v2 cached to
+   `~/.mnueron/models/`. Closes the #1 gap vs agentmemory.
 2. **MCP tool surface: previews + memory_get with paging.** ✓ shipped —
-   fixes the runaway 1.4M-char response problem.
-3. **Auto-chunking long captures at save time.** A 38-message claude.ai
-   chat shouldn't be one 320KB memory — it should be ~5–10 atomic memories
-   (per-turn or per-topic-shift). Both forward (extension + backfill) and
-   retroactive (split existing oversized memories). This is the *proper*
-   fix for the recall context-blowup issue. ~1 session.
-4. **Premium chat-bubble dashboard rendering.** Biggest visible quality jump.
-5. **Migration tool: local → hosted.** Blocks every upgrade conversation.
-6. **Secret redaction at write time.** Closes the gap our own docs flag.
+   `memory_recall` returns 800-char previews; `memory_get(id, max_chars,
+   offset)` pages into long content; `memory_get_thread` reassembles
+   a conversation. Fixes the runaway 1.4M-char response problem.
+3. **Auto-chunking long captures at save time.** ✓ shipped —
+   `chunkContent()` splits transcripts per-turn (with sliding-window
+   fallback for unstructured long text). `mnueron rechunk` retroactively
+   split 115 oversized memories into 9,398 atomic chunks. New saves
+   auto-chunk via `LocalProvider.save()` / `bulkSave()`.
+4. **Premium chat-bubble dashboard rendering.** ✓ shipped — three-pane
+   layout (rail / list / detail). Threads grouped by `parent_ref` so the
+   9,398 chunks display as ~115 conversations. Chat-bubble rendering with
+   role pills, Markdown + Prism syntax highlighting. Light/dark theme
+   toggle, resizable panes, keyboard shortcuts. New `/api/threads` and
+   `/api/threads/:parent_ref` endpoints on the dashboard server.
+5. **Migration tool: local → hosted.** ✓ shipped — `mnueron migrate-to-
+   hosted --url --token` reads local SQLite, uploads in batches to
+   `/v1/memories/bulk` on the hosted backend, writes `~/.mnueron/config.json`
+   to flip the active provider. `--dry-run` and `--no-flip` flags. Config
+   precedence updated so config.json works as a persistent fallback for
+   environment variables.
+6. **Secret redaction at write time.** ✓ shipped — `src/store/redactor.ts`
+   pattern-matches AWS / GitHub / OpenAI / Anthropic / Stripe / Slack /
+   Google / JWT / private-key blocks / URL params / Bearer headers and
+   replaces with `[REDACTED:kind]` placeholders before content hits
+   SQLite. Stamps `metadata.redacted_count` + `redacted_kinds` for
+   dashboard display.
+
+**Phase 1 acceptance criteria all hit.** The local product is now feature-
+complete for a credible public alpha: hybrid search, sane MCP surface,
+chunked memories, premium dashboard, secret hygiene, and a one-command
+upgrade path to hosted.
 
 ### Phase 2 — Cloud product (4–6 sessions)
 

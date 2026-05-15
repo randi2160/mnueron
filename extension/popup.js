@@ -56,15 +56,25 @@ async function setSiteLine() {
   const site = siteFromUrl(tab?.url);
   const line = $('site-line');
   const btn  = $('capture-btn');
+  const captureSection = $('capture-section');
+  const unsupportedSection = $('unsupported-section');
+
   if (site === 'Gemini') {
+    // Show the capture section but disabled with explanatory text
+    captureSection.style.display = 'block';
+    unsupportedSection.style.display = 'none';
     line.innerHTML = `On <span class="name">Gemini</span> — scraper not yet implemented`;
     btn.disabled = true;
   } else if (site) {
+    // Supported chat site — capture is live
+    captureSection.style.display = 'block';
+    unsupportedSection.style.display = 'none';
     line.innerHTML = `On <span class="name">${site}</span>`;
     btn.disabled = false;
   } else {
-    line.textContent = 'Not on a supported chat site';
-    btn.disabled = true;
+    // Not on a chat site — swap to the helpful "open a chat site" panel
+    captureSection.style.display = 'none';
+    unsupportedSection.style.display = 'block';
   }
   // Backfill is only meaningful on claude.ai right now
   $('backfill-section').style.display = (site === 'Claude') ? 'block' : 'none';
@@ -95,10 +105,21 @@ $('open-options').addEventListener('click', e => {
   chrome.runtime.openOptionsPage();
 });
 
-$('open-dashboard').addEventListener('click', async () => {
+async function openDashboardTab() {
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
   const url = res?.settings?.local_url || 'http://localhost:3122';
   chrome.tabs.create({ url });
+}
+
+$('open-dashboard').addEventListener('click', openDashboardTab);
+$('open-dashboard-alt')?.addEventListener('click', openDashboardTab);
+
+// Quick-go buttons in the unsupported-site panel
+document.querySelectorAll('[data-go]').forEach(el => {
+  el.addEventListener('click', () => {
+    const url = el.getAttribute('data-go');
+    if (url) chrome.tabs.create({ url });
+  });
 });
 
 $('capture-btn').addEventListener('click', async () => {

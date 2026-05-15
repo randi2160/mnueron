@@ -4,258 +4,346 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>mnueron · memory dashboard</title>
+
+<!-- Prism.js for syntax highlighting code blocks inside memories -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"
+        data-autoloader-path="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/"></script>
+
 <style>
   /* ─── reset / base ─────────────────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   body {
     font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: #0f1115;
-    color: #d6dae3;
+    background: var(--bg);
+    color: var(--fg);
     -webkit-font-smoothing: antialiased;
   }
-  button, input, select, textarea {
-    font: inherit;
-    color: inherit;
-  }
+  button, input, select, textarea { font: inherit; color: inherit; }
   button { cursor: pointer; }
-  a { color: #7aa2ff; text-decoration: none; }
+  a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  /* ─── layout ───────────────────────────────────────────────────────── */
-  .app { display: grid; grid-template-columns: 260px 1fr; height: 100vh; }
-  .sidebar {
-    background: #0a0c10;
-    border-right: 1px solid #1f2330;
-    padding: 18px 14px;
-    overflow-y: auto;
+  /* ─── theme tokens ─────────────────────────────────────────────────── */
+  :root, [data-theme="dark"] {
+    --bg:           #0f1115;
+    --bg-elev1:     #11141c;
+    --bg-elev2:     #161a26;
+    --bg-elev3:     #1d2230;
+    --bg-rail:      #0a0c10;
+    --border:       #1f2330;
+    --border-soft:  #161a26;
+    --fg:           #d6dae3;
+    --fg-soft:      #8a92a6;
+    --fg-dim:       #6c7488;
+    --fg-bright:    #ffffff;
+    --accent:       #7aa2ff;
+    --accent-bg:    #3a5cf0;
+    --accent-bg-h:  #4a6bff;
+    --ok:           #5cffb0;
+    --ok-bg:        #15301f;
+    --ok-border:    #2a5a3a;
+    --err:          #ffa6b0;
+    --err-bg:       #2a151b;
+    --err-border:   #5a2530;
+    --pill-ns-bg:   #1a2440;
+    --pill-ns-fg:   #9bb1f0;
+    --pill-tag-bg:  #1d2230;
+    --pill-tag-fg:  #9fa9bf;
+    --pill-user-bg: #1c2d1f;
+    --pill-user-fg: #a6e0b0;
+    --pill-asst-bg: #1c2435;
+    --pill-asst-fg: #9bb1f0;
   }
-  .main { display: flex; flex-direction: column; min-width: 0; }
-  .toolbar {
-    padding: 14px 22px;
-    border-bottom: 1px solid #1f2330;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    background: #0f1115;
+  [data-theme="light"] {
+    --bg:           #f7f8fa;
+    --bg-elev1:     #ffffff;
+    --bg-elev2:     #f0f2f6;
+    --bg-elev3:     #e6e9ef;
+    --bg-rail:      #eef0f4;
+    --border:       #d8dde5;
+    --border-soft:  #e9ecf1;
+    --fg:           #1c1f26;
+    --fg-soft:      #5d6675;
+    --fg-dim:       #8b94a3;
+    --fg-bright:    #000000;
+    --accent:       #2950d9;
+    --accent-bg:    #3a5cf0;
+    --accent-bg-h:  #2950d9;
+    --ok:           #1f7a3a;
+    --ok-bg:        #d9f4e1;
+    --ok-border:    #8ad8a3;
+    --err:          #b3303f;
+    --err-bg:       #fbe1e4;
+    --err-border:   #e9a9b2;
+    --pill-ns-bg:   #dee5f7;
+    --pill-ns-fg:   #2950d9;
+    --pill-tag-bg:  #e6e9ef;
+    --pill-tag-fg:  #5d6675;
+    --pill-user-bg: #def0e2;
+    --pill-user-fg: #1f7a3a;
+    --pill-asst-bg: #dee5f7;
+    --pill-asst-fg: #2950d9;
   }
-  .list { flex: 1; overflow-y: auto; padding: 4px 0 32px; }
 
-  /* ─── sidebar ──────────────────────────────────────────────────────── */
+  /* ─── layout: three-pane grid ──────────────────────────────────────── */
+  .app {
+    display: grid;
+    grid-template-columns: var(--rail-w, 260px) 1fr var(--detail-w, 480px);
+    grid-template-rows: 100vh;
+    height: 100vh;
+  }
+  .rail   { background: var(--bg-rail); border-right: 1px solid var(--border); padding: 16px 12px; overflow-y: auto; }
+  .list   { background: var(--bg); display: flex; flex-direction: column; min-width: 0; }
+  .detail { background: var(--bg-elev1); border-left: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+
+  /* ─── rail: brand, stats, namespaces ───────────────────────────────── */
   .brand {
     font-size: 16px;
     font-weight: 600;
-    color: #fff;
+    color: var(--fg-bright);
+    display: flex; align-items: center; gap: 8px;
     margin: 0 4px 4px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
-  .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: #5cffb0; box-shadow: 0 0 6px #5cffb0; }
+  .brand .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 6px var(--ok);
+  }
+  .brand .theme-btn {
+    margin-left: auto; background: none; border: none; color: var(--fg-dim);
+    font-size: 14px; padding: 4px;
+  }
+  .brand .theme-btn:hover { color: var(--fg); }
+
   .stats {
     margin: 14px 4px 22px;
     padding: 12px;
-    background: #131722;
-    border: 1px solid #1f2330;
+    background: var(--bg-elev1);
+    border: 1px solid var(--border);
     border-radius: 8px;
   }
-  .stats .row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 13px; }
-  .stats .row .k { color: #8a92a6; }
-  .stats .row .v { color: #d6dae3; font-variant-numeric: tabular-nums; }
+  .stats .row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
+  .stats .row .k { color: var(--fg-soft); }
+  .stats .row .v { color: var(--fg); font-variant-numeric: tabular-nums; }
 
   .nslabel {
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    color: #6c7488;
+    text-transform: uppercase; font-size: 11px;
+    letter-spacing: 0.08em; color: var(--fg-dim);
     margin: 6px 4px;
   }
   .ns {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 7px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-    color: #c4cad6;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 10px; border-radius: 6px;
+    cursor: pointer; color: var(--fg);
     margin-bottom: 1px;
   }
-  .ns:hover { background: #161a26; }
-  .ns.active { background: #1d2230; color: #fff; }
-  .ns .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ns .count {
-    font-size: 12px;
-    color: #6c7488;
-    background: #11141c;
-    border-radius: 10px;
-    padding: 1px 8px;
-    margin-left: 8px;
-  }
-  .ns.active .count { color: #d6dae3; }
+  .ns:hover  { background: var(--bg-elev2); }
+  .ns.active { background: var(--bg-elev3); color: var(--fg-bright); }
+  .ns .name  { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ns .count { font-size: 11px; color: var(--fg-dim); background: var(--bg); border-radius: 10px; padding: 1px 8px; margin-left: 8px; }
+  .ns.active .count { color: var(--fg); }
 
-  /* ─── toolbar ──────────────────────────────────────────────────────── */
-  .search {
-    flex: 1;
-    background: #161a26;
-    border: 1px solid #232938;
+  .filters {
+    margin: 14px 4px;
+    padding: 10px;
+    background: var(--bg-elev1);
+    border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 8px 12px;
-    color: #fff;
-    min-width: 0;
-    outline: none;
+    font-size: 12px;
+  }
+  .filters label { display: block; color: var(--fg-soft); margin-bottom: 4px; }
+  .filters .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .filters .chip {
+    background: var(--bg-elev2); color: var(--fg-soft);
+    padding: 2px 8px; border-radius: 4px; font-size: 11px;
+    cursor: pointer; user-select: none;
+  }
+  .filters .chip.on { background: var(--accent-bg); color: var(--fg-bright); }
+
+  /* ─── list (middle pane) ───────────────────────────────────────────── */
+  .toolbar {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: center; background: var(--bg);
+  }
+  .search {
+    flex: 1; background: var(--bg-elev2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; color: var(--fg); min-width: 0; outline: none;
     transition: border-color .15s;
   }
-  .search:focus { border-color: #3a5cf0; }
-  .scope {
-    color: #8a92a6;
-    font-size: 13px;
-    white-space: nowrap;
-  }
+  .search:focus { border-color: var(--accent-bg); }
+  .scope { color: var(--fg-soft); font-size: 12px; white-space: nowrap; }
   .btn {
-    background: #1d2230;
-    color: #d6dae3;
-    border: 1px solid #232938;
-    border-radius: 8px;
-    padding: 8px 14px;
-    transition: background .15s;
+    background: var(--bg-elev3); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; transition: background .15s; font-size: 13px;
   }
-  .btn:hover { background: #232938; }
-  .btn.primary { background: #3a5cf0; border-color: #3a5cf0; color: #fff; }
-  .btn.primary:hover { background: #4a6bff; }
+  .btn:hover { background: var(--bg-elev2); }
+  .btn.primary { background: var(--accent-bg); border-color: var(--accent-bg); color: var(--fg-bright); }
+  .btn.primary:hover { background: var(--accent-bg-h); }
 
-  /* ─── memory rows ──────────────────────────────────────────────────── */
-  .empty {
-    color: #6c7488;
-    padding: 80px 22px;
-    text-align: center;
-    font-size: 14px;
-  }
+  .list-body { flex: 1; overflow-y: auto; padding: 0 0 32px; }
+  .empty { color: var(--fg-dim); padding: 80px 22px; text-align: center; font-size: 14px; }
+
+  /* List items (thread row or single-memory row) */
   .row {
-    padding: 14px 22px;
-    border-bottom: 1px solid #1a1e2b;
-    cursor: pointer;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px 12px;
-    align-items: start;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border-soft);
+    cursor: pointer; display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 4px 12px; align-items: center;
   }
-  .row:hover { background: #11141c; }
-  .row.expanded { background: #11141c; }
+  .row:hover  { background: var(--bg-elev1); }
+  .row.active { background: var(--bg-elev2); }
+  .row .icon { color: var(--fg-dim); font-size: 16px; line-height: 1; }
+  .row .title {
+    color: var(--fg); font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    grid-column: 2;
+  }
+  .row.active .title { color: var(--fg-bright); }
+  .row .when { color: var(--fg-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
   .row .meta {
-    grid-column: 1 / -1;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 10px;
-    font-size: 12px;
-    color: #8a92a6;
-    align-items: center;
+    grid-column: 2 / -1;
+    display: flex; flex-wrap: wrap; gap: 6px 10px;
+    font-size: 11px; color: var(--fg-soft); align-items: center;
   }
-  .row .preview {
-    grid-column: 1;
-    color: #d6dae3;
-    line-height: 1.5;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+  .row .score {
+    color: var(--ok); font-variant-numeric: tabular-nums; font-size: 11px;
+    margin-left: 4px;
   }
-  .row.expanded .preview {
-    -webkit-line-clamp: unset;
-    display: block;
-    white-space: pre-wrap;
+
+  /* Pills */
+  .pill { border-radius: 4px; padding: 1px 6px; font-size: 11px; line-height: 1.5; }
+  .ns-pill   { background: var(--pill-ns-bg);   color: var(--pill-ns-fg);   }
+  .tag       { background: var(--pill-tag-bg);  color: var(--pill-tag-fg);  text-transform: lowercase; }
+  .role-pill { font-weight: 500; }
+  .role-pill.role-user      { background: var(--pill-user-bg); color: var(--pill-user-fg); }
+  .role-pill.role-assistant { background: var(--pill-asst-bg); color: var(--pill-asst-fg); }
+  .role-pill.role-other     { background: var(--pill-tag-bg);  color: var(--pill-tag-fg);  }
+
+  /* ─── detail (right pane) ──────────────────────────────────────────── */
+  .detail-empty { color: var(--fg-dim); padding: 80px 22px; text-align: center; font-size: 14px; }
+  .detail-header {
+    padding: 16px 22px 12px; border-bottom: 1px solid var(--border);
+    background: var(--bg-elev1); position: sticky; top: 0; z-index: 2;
+  }
+  .detail-header h2 { margin: 0 0 6px; font-size: 16px; color: var(--fg-bright); font-weight: 600; }
+  .detail-header .sub { color: var(--fg-soft); font-size: 12px; margin-bottom: 8px; }
+  .detail-header .actions { display: flex; gap: 6px; }
+  .detail-header .actions .btn { font-size: 12px; padding: 5px 10px; }
+  .delete-btn {
+    background: none; border: 1px solid var(--err-border); color: var(--err);
+    border-radius: 6px; padding: 5px 10px; font-size: 12px;
+  }
+  .delete-btn:hover { background: var(--err-bg); }
+
+  .detail-body { padding: 16px 22px 80px; flex: 1; }
+
+  /* Chat bubbles inside thread view */
+  .bubbles { display: flex; flex-direction: column; gap: 14px; }
+  .bubble {
+    background: var(--bg-elev1); border: 1px solid var(--border-soft);
+    border-radius: 10px; padding: 12px 14px;
+    position: relative; max-width: 100%;
+  }
+  .bubble .b-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .bubble .b-head .when { color: var(--fg-dim); font-size: 11px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .bubble .b-body {
+    line-height: 1.6;
     word-wrap: break-word;
   }
-  .row .actions { grid-column: 2; display: flex; gap: 6px; }
-  .tag {
-    background: #1d2230;
-    color: #9fa9bf;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 11px;
-    text-transform: lowercase;
+  .bubble .b-body p { margin: 0 0 8px; }
+  .bubble .b-body p:last-child { margin-bottom: 0; }
+  .bubble .b-body code:not(pre code) {
+    background: var(--bg-elev3); padding: 1px 5px; border-radius: 3px;
+    font: 0.92em ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  .ns-pill {
-    background: #1a2440;
-    color: #9bb1f0;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 11px;
+  .bubble .b-body pre {
+    background: #0a0c10; border-radius: 6px; padding: 10px 12px;
+    overflow-x: auto; margin: 8px 0; font-size: 12.5px;
   }
-  .score-pill {
-    background: #1a3024;
-    color: #7be0a8;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
+  .bubble .b-body pre code { background: transparent; padding: 0; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .bubble .b-body h1, .bubble .b-body h2, .bubble .b-body h3 {
+    margin: 14px 0 8px; color: var(--fg-bright); font-weight: 600;
   }
-  .delete-btn {
-    background: none;
-    border: none;
-    color: #6c7488;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 13px;
-  }
-  .delete-btn:hover { background: #3a1a1f; color: #ff8088; }
-  .id-snippet { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #6c7488; }
+  .bubble .b-body h1 { font-size: 18px; }
+  .bubble .b-body h2 { font-size: 16px; }
+  .bubble .b-body h3 { font-size: 14px; }
+  .bubble .b-body ul, .bubble .b-body ol { padding-left: 20px; margin: 4px 0 8px; }
+  .bubble .b-body strong { color: var(--fg-bright); font-weight: 600; }
 
-  /* ─── drop overlay ─────────────────────────────────────────────────── */
+  .bubble.role-user      { border-left: 3px solid var(--pill-user-fg); }
+  .bubble.role-assistant { border-left: 3px solid var(--pill-asst-fg); }
+
+  .single-memory .b-body { line-height: 1.6; white-space: pre-wrap; }
+
+  /* Drop overlay */
   .drop-overlay {
-    position: fixed; inset: 0;
-    background: rgba(15, 17, 21, 0.85);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    border: 3px dashed #3a5cf0;
+    position: fixed; inset: 0; background: rgba(15, 17, 21, 0.85);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100; border: 3px dashed var(--accent-bg);
   }
   .drop-overlay.show { display: flex; }
-  .drop-overlay .msg {
-    color: #fff;
-    font-size: 18px;
-    text-align: center;
-  }
-  .drop-overlay .msg .sub { color: #8a92a6; font-size: 13px; margin-top: 6px; }
+  .drop-overlay .msg { color: var(--fg-bright); font-size: 18px; text-align: center; }
+  .drop-overlay .msg .sub { color: var(--fg-soft); font-size: 13px; margin-top: 6px; }
 
-  /* ─── toast ────────────────────────────────────────────────────────── */
+  /* Toast */
   .toast {
-    position: fixed;
-    bottom: 22px; right: 22px;
-    background: #1d2230;
-    border: 1px solid #2a3142;
-    border-radius: 8px;
-    padding: 12px 16px;
-    color: #d6dae3;
+    position: fixed; bottom: 22px; right: 22px;
+    background: var(--bg-elev3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; color: var(--fg);
     box-shadow: 0 10px 30px rgba(0,0,0,0.4);
-    transform: translateY(20px);
-    opacity: 0;
-    transition: all .25s;
-    pointer-events: none;
-    max-width: 380px;
+    transform: translateY(20px); opacity: 0;
+    transition: all .25s; pointer-events: none; max-width: 380px; z-index: 999;
   }
   .toast.show { transform: translateY(0); opacity: 1; }
-  .toast.err { border-color: #5a2530; color: #ffa6b0; }
-  .toast.ok  { border-color: #2a5a3a; color: #a6ffc4; }
+  .toast.err  { border-color: var(--err-border); color: var(--err); background: var(--err-bg); }
+  .toast.ok   { border-color: var(--ok-border);  color: var(--ok);  background: var(--ok-bg); }
+
+  /* Resize handles */
+  .resizer {
+    position: absolute; top: 0; bottom: 0; width: 4px; cursor: col-resize;
+    background: transparent; transition: background .12s; z-index: 5;
+  }
+  .resizer:hover, .resizer.dragging { background: var(--accent-bg); opacity: 0.4; }
+
+  .id-snippet { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--fg-dim); }
+  .redacted-badge {
+    background: var(--err-bg); color: var(--err); border: 1px solid var(--err-border);
+    border-radius: 4px; padding: 1px 6px; font-size: 11px;
+  }
 </style>
 </head>
 <body>
 
 <div class="app">
-  <aside class="sidebar">
-    <div class="brand"><span class="dot"></span> mnueron</div>
+  <!-- ─── left rail ───────────────────────────────────────────────────── -->
+  <aside class="rail">
+    <div class="brand">
+      <span class="dot"></span> mnueron
+      <button class="theme-btn" id="theme-toggle" title="Toggle theme">◐</button>
+    </div>
 
     <div class="stats" id="stats">
       <div class="row"><span class="k">total memories</span><span class="v" id="stat-total">–</span></div>
+      <div class="row"><span class="k">conversations</span><span class="v" id="stat-threads">–</span></div>
       <div class="row"><span class="k">namespaces</span><span class="v" id="stat-ns">–</span></div>
       <div class="row"><span class="k">last activity</span><span class="v" id="stat-latest">–</span></div>
     </div>
 
     <div class="nslabel">namespaces</div>
     <div id="ns-list"></div>
-  </aside>
 
-  <main class="main">
+    <div class="filters" id="filters" style="display:none">
+      <label>filter by source</label>
+      <div class="chip-row" id="source-chips"></div>
+    </div>
+  </aside>
+  <div class="resizer" id="resizer-left" style="grid-column:1; transform: translateX(-2px);"></div>
+
+  <!-- ─── middle: list ────────────────────────────────────────────────── -->
+  <main class="list">
     <div class="toolbar">
       <input class="search" id="search" type="text" placeholder="Search memories…" autocomplete="off" />
       <span class="scope" id="scope">all namespaces</span>
@@ -263,10 +351,16 @@
       <input type="file" id="import-file" accept=".json" style="display:none" />
     </div>
 
-    <div class="list" id="list">
+    <div class="list-body" id="list">
       <div class="empty">Loading…</div>
     </div>
   </main>
+  <div class="resizer" id="resizer-right"></div>
+
+  <!-- ─── right: detail ───────────────────────────────────────────────── -->
+  <aside class="detail" id="detail">
+    <div class="detail-empty">Select a memory to read it</div>
+  </aside>
 </div>
 
 <div class="drop-overlay" id="drop">
@@ -283,10 +377,14 @@
   const state = {
     namespace: null,    // null = all
     query: '',
-    memories: [],
+    sourceFilters: new Set(),
+    items: [],          // current list — array of {type:'thread', ...} or {type:'memory', ...}
     namespaces: [],
-    expanded: new Set(),
+    selectedId: null,   // either a parent_ref (for threads) or a memory id
+    theme: localStorage.getItem('theme') || 'dark',
   };
+
+  document.documentElement.setAttribute('data-theme', state.theme);
 
   // ─── api ──────────────────────────────────────────────────────────────
   async function api(path, opts) {
@@ -299,29 +397,75 @@
     return r.json();
   }
 
-  // ─── render ───────────────────────────────────────────────────────────
+  // ─── format helpers ──────────────────────────────────────────────────
   function fmtDate(ts) {
     if (!ts) return '–';
     const d = new Date(ts);
     const now = Date.now();
     const diff = now - ts;
-    if (diff < 60_000) return 'just now';
-    if (diff < 3_600_000) return Math.floor(diff/60_000) + 'm ago';
-    if (diff < 86_400_000) return Math.floor(diff/3_600_000) + 'h ago';
-    if (diff < 604_800_000) return Math.floor(diff/86_400_000) + 'd ago';
+    if (diff < 60_000)        return 'just now';
+    if (diff < 3_600_000)     return Math.floor(diff/60_000) + 'm';
+    if (diff < 86_400_000)    return Math.floor(diff/3_600_000) + 'h';
+    if (diff < 604_800_000)   return Math.floor(diff/86_400_000) + 'd';
     return d.toISOString().slice(0, 10);
   }
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;',
     }[c]));
   }
 
+  // Minimal markdown → HTML. Just enough for chat content:
+  //   **bold**, *italic*, `inline code`, ```code blocks```, # headings, lists, links
+  function renderMarkdown(src) {
+    if (!src) return '';
+    // Strip optional leading **Role:** header — we already render it as a pill
+    let text = src.replace(/^\*\*(?:User|Assistant|Claude|ChatGPT|Gemini|System|Human):\*\*\s*/i, '');
+    // Code blocks first (fenced)
+    const codeBlocks = [];
+    text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
+      const i = codeBlocks.length;
+      codeBlocks.push({ lang: lang || '', code });
+      return ` CB${i} `;
+    });
+    // Escape
+    text = escapeHtml(text);
+    // Headings
+    text = text.replace(/^(#{1,6})\s+(.+)$/gm, (_, hashes, t) => {
+      const lvl = Math.min(hashes.length, 3);
+      return `<h${lvl}>${t}</h${lvl}>`;
+    });
+    // Bold + italic + inline code
+    text = text.replace(/`([^`\n]+?)`/g, '<code>$1</code>');
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    // Links [text](url)
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Unordered lists (simple)
+    text = text.replace(/(?:^|\n)((?:[-*]\s+.+\n?)+)/g, m => {
+      const items = m.trim().split(/\n/).map(l => l.replace(/^[-*]\s+/, '').trim());
+      return '\n<ul>' + items.map(i => `<li>${i}</li>`).join('') + '</ul>\n';
+    });
+    // Paragraph wrap (very rough)
+    text = text.split(/\n{2,}/).map(p => {
+      if (/^<(h\d|ul|ol|pre)/i.test(p.trim())) return p;
+      return `<p>${p.replace(/\n/g, '<br/>')}</p>`;
+    }).join('\n');
+    // Re-insert code blocks with Prism-friendly class
+    text = text.replace(/ CB(\d+) /g, (_, i) => {
+      const { lang, code } = codeBlocks[+i];
+      const cls = lang ? ` class="language-${escapeHtml(lang)}"` : '';
+      return `<pre><code${cls}>${escapeHtml(code)}</code></pre>`;
+    });
+    return text;
+  }
+
+  // ─── loaders ──────────────────────────────────────────────────────────
   async function loadStats() {
     try {
       const s = await api('/api/stats');
-      document.getElementById('stat-total').textContent = s.total;
-      document.getElementById('stat-ns').textContent = s.namespaces;
+      document.getElementById('stat-total').textContent = s.total ?? '–';
+      document.getElementById('stat-ns').textContent = s.namespaces ?? '–';
       document.getElementById('stat-latest').textContent = fmtDate(s.latest);
     } catch (e) { toast('stats: ' + e.message, 'err'); }
   }
@@ -353,78 +497,238 @@
         state.namespace = (v === '__all__') ? null : v;
         renderNamespaces();
         document.getElementById('scope').textContent = state.namespace || 'all namespaces';
-        loadMemories();
+        loadList();
       });
     });
   }
 
-  async function loadMemories() {
+  // Load either threads (no query) or search results (query set).
+  async function loadList() {
     const q = state.query.trim();
-    const params = new URLSearchParams();
-    if (state.namespace) params.set('namespace', state.namespace);
-    if (q) params.set('q', q);
-    params.set('limit', '100');
-    try {
-      const list = await api('/api/memories?' + params.toString());
-      state.memories = list;
-      renderList();
-    } catch (e) {
-      document.getElementById('list').innerHTML = `<div class="empty">error: ${escapeHtml(e.message)}</div>`;
+    if (q) {
+      // Search returns memories (chunks), not threads
+      const params = new URLSearchParams();
+      if (state.namespace) params.set('namespace', state.namespace);
+      params.set('q', q);
+      params.set('limit', '60');
+      try {
+        const list = await api('/api/memories?' + params.toString());
+        state.items = list.map(m => ({ type: 'memory', memory: m }));
+        renderList();
+      } catch (e) {
+        document.getElementById('list').innerHTML = `<div class="empty">error: ${escapeHtml(e.message)}</div>`;
+      }
+    } else {
+      // Browse mode — show threads (grouped)
+      const params = new URLSearchParams();
+      if (state.namespace) params.set('namespace', state.namespace);
+      params.set('limit', '200');
+      try {
+        const threads = await api('/api/threads?' + params.toString());
+        state.items = threads.map(t => ({ type: 'thread', thread: t }));
+        document.getElementById('stat-threads').textContent = threads.length;
+        renderList();
+      } catch (e) {
+        document.getElementById('list').innerHTML = `<div class="empty">error: ${escapeHtml(e.message)}</div>`;
+      }
     }
   }
 
   function renderList() {
     const root = document.getElementById('list');
-    if (state.memories.length === 0) {
+    if (state.items.length === 0) {
       root.innerHTML = `<div class="empty">${state.query ? 'No matches.' : 'No memories yet.'}</div>`;
       return;
     }
-    root.innerHTML = state.memories.map(m => {
-      const expanded = state.expanded.has(m.id);
-      const score = (typeof m.score === 'number') ? `<span class="score-pill">${m.score.toFixed(2)}</span>` : '';
-      const tags = (m.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(' ');
-      return `<div class="row ${expanded ? 'expanded' : ''}" data-id="${escapeHtml(m.id)}">
-        <div class="preview">${escapeHtml(m.content)}</div>
-        <div class="actions">
-          <button class="delete-btn" data-del="${escapeHtml(m.id)}" title="Delete">✕</button>
-        </div>
-        <div class="meta">
-          <span class="ns-pill">${escapeHtml(m.namespace)}</span>
-          ${tags}
-          ${score}
-          <span>${fmtDate(m.created_at)}</span>
-          <span class="id-snippet">${escapeHtml(m.id.slice(0, 8))}</span>
-        </div>
-      </div>`;
+    root.innerHTML = state.items.map(it => {
+      if (it.type === 'thread') return renderThreadRow(it.thread);
+      return renderMemoryRow(it.memory);
     }).join('');
     root.querySelectorAll('.row').forEach(el => {
-      el.addEventListener('click', e => {
-        if (e.target.matches('.delete-btn')) return;
+      el.addEventListener('click', () => {
         const id = el.getAttribute('data-id');
-        if (state.expanded.has(id)) state.expanded.delete(id);
-        else state.expanded.add(id);
-        renderList();
+        const kind = el.getAttribute('data-kind');
+        state.selectedId = id;
+        root.querySelectorAll('.row.active').forEach(e => e.classList.remove('active'));
+        el.classList.add('active');
+        if (kind === 'thread') loadThreadDetail(id);
+        else                   loadMemoryDetail(id);
       });
     });
-    root.querySelectorAll('.delete-btn').forEach(el => {
-      el.addEventListener('click', async e => {
-        e.stopPropagation();
-        const id = el.getAttribute('data-del');
+  }
+
+  function renderThreadRow(t) {
+    const active = state.selectedId === t.parent_ref;
+    const icon = t.has_chunks ? '💬' : '📝';
+    return `<div class="row ${active ? 'active' : ''}" data-id="${escapeHtml(t.parent_ref)}" data-kind="thread">
+      <div class="icon">${icon}</div>
+      <div class="title">${escapeHtml(t.title)}</div>
+      <div class="when">${fmtDate(t.last_at)}</div>
+      <div class="meta">
+        <span class="pill ns-pill">${escapeHtml(t.namespace)}</span>
+        ${t.has_chunks ? `<span>${t.count} turns</span>` : '<span>single note</span>'}
+      </div>
+    </div>`;
+  }
+  function renderMemoryRow(m) {
+    const active = state.selectedId === m.id;
+    const role = m.metadata?.role || (m.tags || []).find(t => t.startsWith('role:'))?.slice(5);
+    const roleClass = role === 'user' ? 'role-user' : role === 'assistant' ? 'role-assistant' : 'role-other';
+    const rolePill = role ? `<span class="pill role-pill ${roleClass}">${role}</span>` : '';
+    const score = (typeof m.score === 'number') ? `<span class="score">${m.score.toFixed(3)}</span>` : '';
+    const preview = (m.content_preview ?? m.content ?? '').replace(/^\*\*(?:User|Assistant|Claude|ChatGPT|Gemini|System|Human):\*\*\s*/i, '');
+    const tags = (m.tags || []).filter(t => !t.startsWith('role:') && t !== 'chunk').slice(0, 3)
+      .map(t => `<span class="pill tag">${escapeHtml(t)}</span>`).join(' ');
+    return `<div class="row ${active ? 'active' : ''}" data-id="${escapeHtml(m.id)}" data-kind="memory">
+      <div class="icon">${role === 'user' ? '👤' : role === 'assistant' ? '🤖' : '·'}</div>
+      <div class="title">${escapeHtml(preview.slice(0, 110))}</div>
+      <div class="when">${fmtDate(m.created_at)}${score}</div>
+      <div class="meta">
+        <span class="pill ns-pill">${escapeHtml(m.namespace)}</span>
+        ${rolePill}
+        ${tags}
+      </div>
+    </div>`;
+  }
+
+  // ─── detail loaders ───────────────────────────────────────────────────
+  async function loadThreadDetail(parentRef) {
+    const dEl = document.getElementById('detail');
+    dEl.innerHTML = `<div class="detail-empty">Loading…</div>`;
+    try {
+      const res = await api('/api/threads/' + encodeURIComponent(parentRef));
+      const chunks = res.chunks || [];
+      if (chunks.length === 0) {
+        dEl.innerHTML = `<div class="detail-empty">Empty thread</div>`;
+        return;
+      }
+      const first = chunks[0];
+      const title = extractTitle(first.content || '');
+      const lastAt = Math.max(...chunks.map(c => c.updated_at || c.created_at || 0));
+      const ns = first.namespace;
+      const headerHtml = `
+        <div class="detail-header">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="sub">
+            <span class="pill ns-pill">${escapeHtml(ns)}</span>
+            ${chunks.length > 1 ? `${chunks.length} turns · ` : ''}${fmtDate(lastAt)}
+          </div>
+          <div class="actions">
+            <button class="btn" id="copy-ref">Copy parent_ref</button>
+            <button class="delete-btn" id="delete-thread">Delete thread</button>
+          </div>
+        </div>
+        <div class="detail-body">
+          <div class="bubbles">
+            ${chunks.map(c => renderBubble(c)).join('')}
+          </div>
+        </div>
+      `;
+      dEl.innerHTML = headerHtml;
+
+      document.getElementById('copy-ref').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(parentRef);
+        toast('Copied parent_ref to clipboard.', 'ok');
+      });
+      document.getElementById('delete-thread').addEventListener('click', async () => {
+        if (!confirm(`Delete this entire ${chunks.length}-turn conversation?`)) return;
+        for (const c of chunks) {
+          try { await api('/api/memories/' + encodeURIComponent(c.id), { method: 'DELETE' }); } catch {}
+        }
+        toast(`Deleted ${chunks.length} memories.`, 'ok');
+        dEl.innerHTML = `<div class="detail-empty">Select a memory to read it</div>`;
+        state.selectedId = null;
+        await Promise.all([loadList(), loadNamespaces(), loadStats()]);
+      });
+
+      // Trigger Prism highlight if available
+      if (window.Prism) try { window.Prism.highlightAllUnder(dEl); } catch {}
+    } catch (e) {
+      dEl.innerHTML = `<div class="detail-empty">error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function loadMemoryDetail(id) {
+    const dEl = document.getElementById('detail');
+    dEl.innerHTML = `<div class="detail-empty">Loading…</div>`;
+    try {
+      const m = await api('/api/memories/' + encodeURIComponent(id));
+      const title = extractTitle(m.content || '');
+      const parentRef = m.metadata?.parent_ref ?? m.source_ref;
+      const role = m.metadata?.role;
+      const redacted = m.metadata?.redacted_count;
+      const tags = (m.tags || []).filter(t => !t.startsWith('role:') && t !== 'chunk');
+      const headerHtml = `
+        <div class="detail-header">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="sub">
+            <span class="pill ns-pill">${escapeHtml(m.namespace)}</span>
+            ${role ? `<span class="pill role-pill role-${role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'other'}">${role}</span>` : ''}
+            ${tags.map(t => `<span class="pill tag">${escapeHtml(t)}</span>`).join(' ')}
+            <span style="color: var(--fg-dim);">${fmtDate(m.created_at)}</span>
+            <span class="id-snippet">${escapeHtml(m.id.slice(0,8))}</span>
+            ${redacted ? `<span class="redacted-badge">${redacted} secret${redacted>1?'s':''} redacted</span>` : ''}
+          </div>
+          <div class="actions">
+            ${parentRef ? `<button class="btn" id="show-thread">Show full thread</button>` : ''}
+            <button class="delete-btn" id="delete-memory">Delete</button>
+          </div>
+        </div>
+        <div class="detail-body">
+          <div class="single-memory bubble ${role === 'user' ? 'role-user' : role === 'assistant' ? 'role-assistant' : ''}">
+            <div class="b-body">${renderMarkdown(m.content)}</div>
+          </div>
+        </div>
+      `;
+      dEl.innerHTML = headerHtml;
+      if (parentRef) {
+        document.getElementById('show-thread').addEventListener('click', () => {
+          state.selectedId = parentRef;
+          loadThreadDetail(parentRef);
+        });
+      }
+      document.getElementById('delete-memory').addEventListener('click', async () => {
         if (!confirm('Delete this memory?')) return;
-        try {
-          await api('/api/memories/' + encodeURIComponent(id), { method: 'DELETE' });
-          toast('Deleted.', 'ok');
-          await Promise.all([loadMemories(), loadNamespaces(), loadStats()]);
-        } catch (err) { toast('delete failed: ' + err.message, 'err'); }
+        await api('/api/memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+        toast('Deleted.', 'ok');
+        dEl.innerHTML = `<div class="detail-empty">Select a memory to read it</div>`;
+        state.selectedId = null;
+        await Promise.all([loadList(), loadNamespaces(), loadStats()]);
       });
-    });
+      if (window.Prism) try { window.Prism.highlightAllUnder(dEl); } catch {}
+    } catch (e) {
+      dEl.innerHTML = `<div class="detail-empty">error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderBubble(m) {
+    const role = m.metadata?.role || m.role;
+    const roleClass = role === 'user' ? 'role-user' : role === 'assistant' ? 'role-assistant' : '';
+    const roleLabel = role === 'user' ? 'User' : role === 'assistant' ? 'Assistant' : (role || '·');
+    const pillClass = role === 'user' ? 'role-user' : role === 'assistant' ? 'role-assistant' : 'role-other';
+    return `<div class="bubble ${roleClass}">
+      <div class="b-head">
+        <span class="pill role-pill ${pillClass}">${escapeHtml(roleLabel)}</span>
+        <span class="when">${fmtDate(m.created_at)}</span>
+      </div>
+      <div class="b-body">${renderMarkdown(m.content)}</div>
+    </div>`;
+  }
+
+  function extractTitle(content) {
+    if (!content) return '(empty)';
+    const t = content.trim();
+    const h = t.slice(0, 600).match(/^#{1,3}\s+(.+)$/m);
+    if (h) return h[1].trim().slice(0, 100);
+    const firstLine = t.split(/\r?\n/).map(s => s.trim()).find(Boolean) ?? t;
+    const noRole = firstLine.replace(/^\*\*(?:User|Assistant|Claude|ChatGPT|Gemini|System|Human):\*\*\s*/i, '');
+    return noRole.length > 100 ? noRole.slice(0, 100) + '…' : noRole;
   }
 
   // ─── import ───────────────────────────────────────────────────────────
   async function importFile(file) {
     try {
       const text = await file.text();
-      // sniff format client-side just to set a reasonable default namespace label
       const ns = prompt('Import into namespace:', 'imported') || 'imported';
       toast(`Reading ${file.name}…`);
       const res = await api('/api/import', {
@@ -433,7 +737,7 @@
         body: JSON.stringify({ content: text, namespace: ns }),
       });
       toast(`Imported ${res.saved} memories (${res.format}) into "${res.namespace}".`, 'ok');
-      await Promise.all([loadMemories(), loadNamespaces(), loadStats()]);
+      await Promise.all([loadList(), loadNamespaces(), loadStats()]);
     } catch (e) { toast('import failed: ' + e.message, 'err'); }
   }
 
@@ -453,7 +757,7 @@
   searchEl.addEventListener('input', () => {
     state.query = searchEl.value;
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(loadMemories, 250);
+    searchTimer = setTimeout(loadList, 200);
   });
 
   document.getElementById('import-btn').addEventListener('click', () => {
@@ -465,17 +769,12 @@
     e.target.value = '';
   });
 
-  // drag-drop
+  // Drag-drop import
   const drop = document.getElementById('drop');
   let dragCounter = 0;
-  window.addEventListener('dragenter', e => {
-    e.preventDefault(); dragCounter++; drop.classList.add('show');
-  });
-  window.addEventListener('dragover', e => e.preventDefault());
-  window.addEventListener('dragleave', e => {
-    e.preventDefault(); dragCounter = Math.max(0, dragCounter - 1);
-    if (dragCounter === 0) drop.classList.remove('show');
-  });
+  window.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; drop.classList.add('show'); });
+  window.addEventListener('dragover',  e => e.preventDefault());
+  window.addEventListener('dragleave', e => { e.preventDefault(); dragCounter = Math.max(0, dragCounter - 1); if (dragCounter === 0) drop.classList.remove('show'); });
   window.addEventListener('drop', e => {
     e.preventDefault(); dragCounter = 0; drop.classList.remove('show');
     const f = e.dataTransfer.files[0];
@@ -483,12 +782,56 @@
     else toast('Drop a .json export file.', 'err');
   });
 
+  // Theme toggle
+  document.getElementById('theme-toggle').addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', state.theme);
+    document.documentElement.setAttribute('data-theme', state.theme);
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', e => {
+    if (e.key === '/' && document.activeElement !== searchEl) {
+      e.preventDefault(); searchEl.focus();
+    }
+  });
+
+  // Pane resize (persist to localStorage)
+  function setupResize(handleId, cssVar, defaultPx) {
+    const stored = parseInt(localStorage.getItem(cssVar) || '', 10);
+    if (stored && stored > 120 && stored < 1000) document.documentElement.style.setProperty(cssVar, `${stored}px`);
+    const handle = document.getElementById(handleId);
+    if (!handle) return;
+    let startX, startWidth;
+    handle.addEventListener('mousedown', e => {
+      startX = e.clientX;
+      const cur = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+      startWidth = parseInt(cur || `${defaultPx}`, 10);
+      handle.classList.add('dragging');
+      const onMove = ev => {
+        const sign = cssVar === '--rail-w' ? 1 : -1;
+        const delta = (ev.clientX - startX) * sign;
+        const next = Math.max(180, Math.min(720, startWidth + delta));
+        document.documentElement.style.setProperty(cssVar, `${next}px`);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        handle.classList.remove('dragging');
+        const cur = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+        localStorage.setItem(cssVar, parseInt(cur, 10).toString());
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+  }
+  setupResize('resizer-left',  '--rail-w',   260);
+  setupResize('resizer-right', '--detail-w', 480);
+
   // ─── boot ─────────────────────────────────────────────────────────────
   loadStats();
   loadNamespaces();
-  loadMemories();
-
-  // refresh stats every 30s in case something else writes
+  loadList();
   setInterval(loadStats, 30_000);
 </script>
 </body>

@@ -135,6 +135,35 @@ async function route(p: Provider, req: IncomingMessage, res: ServerResponse) {
     }
   }
 
+  // ─── threads ─────────────────────────────────────────────────────────────
+  // A "thread" is a group of memories sharing a parent_ref in metadata.
+  // The dashboard groups chunks back into conversations for display.
+  //
+  // GET /api/threads?namespace=&limit=&offset=
+  //   list of { parent_ref, namespace, count, first_at, last_at, sample_title }
+  //
+  // GET /api/threads/<parent_ref>
+  //   all chunks of one thread, ordered by chunk_index then created_at
+  if (method === 'GET' && path === '/api/threads') {
+    const namespace = url.searchParams.get('namespace') || undefined;
+    const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
+    const offset = clampInt(url.searchParams.get('offset'), 0, 0, 100000);
+    const anyP = p as any;
+    if (typeof anyP.listThreads !== 'function') {
+      return sendJson(res, 501, { error: 'threads only supported on local provider for now' });
+    }
+    return sendJson(res, 200, anyP.listThreads({ namespace, limit, offset }));
+  }
+  if (method === 'GET' && path.startsWith('/api/threads/')) {
+    const ref = decodeURIComponent(path.slice('/api/threads/'.length));
+    if (!ref) return sendJson(res, 400, { error: 'missing parent_ref' });
+    const anyP = p as any;
+    if (typeof anyP.findThread !== 'function') {
+      return sendJson(res, 501, { error: 'threads only supported on local provider for now' });
+    }
+    return sendJson(res, 200, { parent_ref: ref, chunks: anyP.findThread(ref) });
+  }
+
   if (method === 'POST' && path === '/api/import') {
     const body = await readBody(req);
     let parsed: any;

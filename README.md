@@ -248,9 +248,18 @@ mnueron/
 
 ## License
 
-MIT. Fork, embed, modify, sell — whatever. The hosted commercial offering
-(when it exists) is separate from this code; the OSS path is supported
-indefinitely.
+mnueron uses an **open-core** model. Full details in [`LICENSE-OVERVIEW.md`](LICENSE-OVERVIEW.md).
+
+| Directory | License | What it means |
+| --- | --- | --- |
+| `src/`, `dashboard/`, `extension/`, `sdks/`, `examples/`, `scripts/` | **MIT** | Use, fork, embed, sell — no restrictions. Drop the SDK into commercial products freely. |
+| `server/` (and future `dashboard-web/`) | **[FSL-1.1-Apache-2.0](server/LICENSE)** | Read, modify, contribute, self-host for your own use. You cannot launch a competing commercial memory-as-a-service. Each version auto-converts to Apache 2.0 two years after release. |
+
+In short: **the client is fully open source. The hosted backend is source-available.** This is the same model Sentry uses, and it lets us welcome contributions while keeping a viable hosted business.
+
+## Contributing
+
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). All contributors sign a one-time [Contributor License Agreement](CLA.md) (same pattern as Apache, Google, Microsoft).
 
 ## Status
 

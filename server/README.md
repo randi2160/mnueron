@@ -1,8 +1,16 @@
 # mnueron hosted backend
 
+> **License notice:** this directory is licensed under
+> [**FSL-1.1-Apache-2.0**](LICENSE) (Functional Source License), not MIT.
+> You may read, modify, contribute, and self-host this code for your own
+> use. You may **not** offer it as a competing commercial
+> memory-as-a-service. Each version auto-converts to Apache 2.0 two years
+> after release. See [`../LICENSE-OVERVIEW.md`](../LICENSE-OVERVIEW.md)
+> for the full picture and FAQ.
+
 The multi-tenant Postgres-backed memory service. Runs the same MCP tool
 contract as the local SQLite store, just over HTTP with per-org isolation
-enforced by Postgres Row-Level Security — and now with email + password
+enforced by Postgres Row-Level Security — and with email + password
 sign-up / login so users can self-provision.
 
 ## Stack

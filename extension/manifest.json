@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "mnueron — AI chat memory",
+  "version": "0.1.0",
+  "description": "Capture your conversations from Claude, ChatGPT, and Gemini into your local mnueron memory layer.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "mnueron — capture this chat"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["scrapers/claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["scrapers/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["scrapers/gemini.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

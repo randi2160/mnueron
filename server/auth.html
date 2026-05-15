@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>mnueron · sign up</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(circle at 30% 20%, #131826 0%, #0a0c12 100%);
+    color: #d6dae3;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 16px;
+  }
+  .card {
+    background: #11141c;
+    border: 1px solid #1f2330;
+    border-radius: 14px;
+    padding: 32px 32px 28px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+  }
+  .brand {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .brand .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #5cffb0; box-shadow: 0 0 6px #5cffb0;
+  }
+  h1 {
+    margin: 16px 0 6px;
+    font-size: 22px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .sub {
+    color: #8a92a6;
+    margin: 0 0 22px;
+    font-size: 13px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: #8a92a6;
+    margin: 14px 0 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  input {
+    width: 100%;
+    background: #0a0c10;
+    border: 1px solid #232938;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #fff;
+    font: inherit;
+    outline: none;
+    transition: border-color .15s;
+  }
+  input:focus { border-color: #3a5cf0; }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid #3a5cf0;
+    background: #3a5cf0;
+    color: #fff;
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  button:hover:not(:disabled) { background: #4a6bff; }
+  button:disabled { background: #1d2230; border-color: #232938; color: #6c7488; cursor: not-allowed; }
+
+  .switch {
+    margin-top: 16px;
+    font-size: 13px;
+    color: #8a92a6;
+    text-align: center;
+  }
+  .switch a {
+    color: #7aa2ff;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .switch a:hover { text-decoration: underline; }
+
+  .error {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: #2a151b;
+    border: 1px solid #5a2530;
+    border-radius: 6px;
+    color: #ffa6b0;
+    font-size: 13px;
+    display: none;
+  }
+  .error.show { display: block; }
+
+  .success {
+    display: none;
+  }
+  .success.show { display: block; }
+  .success h2 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    color: #5cffb0;
+  }
+  .token-box {
+    margin: 14px 0;
+    padding: 14px;
+    background: #0a0c10;
+    border: 1px solid #2a3142;
+    border-radius: 8px;
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #e6e9f0;
+    word-break: break-all;
+  }
+  .copy-row { display: flex; gap: 8px; margin-top: 10px; }
+  .copy-row button { margin-top: 0; }
+  .secondary {
+    background: #1d2230 !important;
+    border-color: #232938 !important;
+    color: #d6dae3 !important;
+  }
+  .secondary:hover { background: #232938 !important; }
+  .note {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #8a92a6;
+    line-height: 1.5;
+  }
+  .note code {
+    background: #1a1e2b;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #c4cad6;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand"><span class="dot"></span> mnueron</div>
+
+    <div id="form-wrap">
+      <h1 id="title">Create your account</h1>
+      <p class="sub" id="sub">One account, one API token. Use it from the extension, the SDK, or any MCP-connected AI tool.</p>
+
+      <form id="auth-form">
+        <div id="name-field">
+          <label for="name">Name (optional)</label>
+          <input id="name" type="text" autocomplete="name" placeholder="Jane Smith" />
+        </div>
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" required placeholder="you@example.com" />
+
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="new-password" required placeholder="at least 8 characters" />
+
+        <button id="submit" type="submit">Create account</button>
+        <div class="error" id="error"></div>
+      </form>
+
+      <div class="switch" id="switch">
+        Already have an account? <a id="toggle">Log in</a>
+      </div>
+    </div>
+
+    <div class="success" id="success">
+      <h2>You're in.</h2>
+      <p class="sub" id="welcome">Account created. Here is your API token — copy it now. We won't show it again.</p>
+      <div class="token-box" id="token-box">mnu_…</div>
+      <div class="copy-row">
+        <button class="secondary" id="copy-btn">Copy token</button>
+        <button id="next-btn">Open extension settings</button>
+      </div>
+      <p class="note">
+        Paste this token into the mnueron Chrome extension under <code>Settings → Hosted backend → Bearer token</code>,
+        and check <em>Use hosted backend instead of local</em>. You can also use it from your SDK by setting
+        <code>MNUERON_API_KEY</code>.
+      </p>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let mode = '{{mode}}';
+  if (mode !== 'login' && mode !== 'signup') mode = 'signup';
+
+  function applyMode() {
+    if (mode === 'login') {
+      $('title').textContent = 'Log in';
+      $('sub').textContent = 'Welcome back. We will issue a fresh API token on each login.';
+      $('submit').textContent = 'Log in';
+      $('name-field').style.display = 'none';
+      $('password').setAttribute('autocomplete', 'current-password');
+      $('switch').innerHTML = `No account yet? <a id="toggle">Sign up</a>`;
+      document.title = 'mnueron · log in';
+    } else {
+      $('title').textContent = 'Create your account';
+      $('sub').textContent = 'One account, one API token. Use it from the extension, the SDK, or any MCP-connected AI tool.';
+      $('submit').textContent = 'Create account';
+      $('name-field').style.display = 'block';
+      $('password').setAttribute('autocomplete', 'new-password');
+      $('switch').innerHTML = `Already have an account? <a id="toggle">Log in</a>`;
+      document.title = 'mnueron · sign up';
+    }
+    $('toggle').addEventListener('click', () => {
+      mode = (mode === 'login') ? 'signup' : 'login';
+      history.replaceState(null, '', '/' + mode);
+      $('error').className = 'error';
+      applyMode();
+    });
+  }
+
+  applyMode();
+
+  $('auth-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('submit').disabled = true;
+    $('error').className = 'error';
+    const payload = {
+      email:    $('email').value.trim(),
+      password: $('password').value,
+    };
+    if (mode === 'signup' && $('name').value.trim()) payload.name = $('name').value.trim();
+    try {
+      const r = await fetch(`/v1/auth/${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        $('error').textContent = data.error || `${r.status} error`;
+        $('error').className = 'error show';
+        $('submit').disabled = false;
+        return;
+      }
+      // success — show token
+      $('form-wrap').style.display = 'none';
+      $('success').className = 'success show';
+      $('token-box').textContent = data.token.raw;
+      $('welcome').textContent =
+        mode === 'signup'
+          ? `Account created for ${data.user.email}. Here is your API token — copy it now. We won't show it again.`
+          : `Welcome back, ${data.user.name || data.user.email}. Here is a fresh API token for this session.`;
+      $('copy-btn').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(data.token.raw);
+        $('copy-btn').textContent = 'Copied ✓';
+        setTimeout(() => { $('copy-btn').textContent = 'Copy token'; }, 1800);
+      });
+      $('next-btn').addEventListener('click', () => {
+        alert('Open chrome://extensions, click the mnueron extension card → Extension options. Paste the token under "Hosted backend → Bearer token".');
+      });
+    } catch (err) {
+      $('error').textContent = err.message;
+      $('error').className = 'error show';
+      $('submit').disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

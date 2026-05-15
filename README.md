@@ -1,0 +1,235 @@
+# MNUERON
+
+**One memory layer. Every LLM. Every dev tool. Every app you build.**
+
+Persistent memory for Claude Desktop, Claude Code, Cursor, Windsurf, Cline —
+and any app you build with OpenAI, Anthropic, Mistral, or anything else.
+Local-first and free forever. Optional hosted backend for cross-machine sync,
+team sharing, and multi-tenant deployments.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│   Dev tools:                                                            │
+│   Claude Desktop · Claude Code · Cursor · Windsurf · Cline ──► MCP ─┐   │
+│                                                                     │   │
+│   Your apps:                                                        ├─► │
+│   Python SDK · C# SDK · TypeScript · REST ─────────────────────────┘   │
+│                                                                         │
+│            mnueron ──► [local SQLite]   FREE                            │
+│                    ──► [hosted Postgres] $ optional                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## Why this exists
+
+AI tools and AI apps are stateless by default. Every new chat session, your
+AI starts from zero — you re-explain the same conventions, the same project
+context, the same user preferences, every time. MNUERON gives your AI a
+persistent memory that follows you across sessions, across machines, across
+tools, and across LLM providers.
+
+What changes day-to-day:
+
+- **In Claude Desktop / Cursor:** A new chat starts knowing your project conventions, past decisions, and where you left off.
+- **In your apps:** When a user comes back, the AI already knows their preferences — without you wiring it up per-provider.
+- **Across providers:** Switch from OpenAI to Claude to Mistral without losing your customer's history. The memory layer is the constant.
+
+## Install in one command
+
+```bash
+npm install -g mnueron
+mnueron setup
+```
+
+The setup wizard detects every AI dev tool you have installed, configures
+each one, and reports back. Restart your tools and your AI remembers.
+
+```
+  🧠  mnueron — persistent memory for AI dev tools
+      mode: local SQLite
+
+Configured:
+  ✓ Claude Desktop          added
+  ✓ Claude Code             added via `claude mcp add`
+  ✓ Cursor                  added
+
+Not detected:
+    Windsurf
+    Cline (VS Code)
+
+✨ Done. Restart any running AI tool to load the memory plugin.
+```
+
+## What your AI gets
+
+Six new tools available to any MCP-compatible AI:
+
+| Tool | What it does |
+| --- | --- |
+| `memory_save` | Save a memory (content, namespace, tags). |
+| `memory_recall` | Search by relevance — called when you reference prior context. |
+| `memory_list` | List recent memories, optionally filtered. |
+| `memory_delete` | Delete by id. |
+| `memory_namespaces` | List namespaces and their counts. |
+| `memory_import_chat` | Bulk-import a Claude/ChatGPT export file. |
+
+## Import your existing chat history
+
+Bring months of Claude or ChatGPT conversations into your memory in one shot:
+
+```bash
+# Export from claude.ai → Settings → Privacy → Export data
+# Export from chatgpt.com → Settings → Data Controls → Export
+
+mnueron import ~/Downloads/conversations.json --ns my-project
+```
+
+Auto-detects Claude vs OpenAI format. Each conversation becomes a searchable
+memory tagged `imported`.
+
+## Use it in your apps (Python)
+
+```bash
+pip install mnueron
+```
+
+```python
+from mnueron import Mnueron
+from openai import OpenAI
+
+mem = Mnueron(api_key="mnu_...")
+llm = OpenAI()
+
+# Pull memory before the LLM call — provider-agnostic
+context = mem.search(user_message, namespace=f"user-{user.id}", k=5)
+context_str = "\n".join(m.content for m in context)
+
+# Use any LLM you want — OpenAI shown here, swap for anthropic/mistral/gemini freely
+resp = llm.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        {"role": "system", "content": f"What you know about this user:\n{context_str}"},
+        {"role": "user", "content": user_message},
+    ],
+)
+
+# Save anything worth remembering — same call regardless of provider
+mem.save(extract_facts(resp), namespace=f"user-{user.id}", source="auto")
+```
+
+The same pattern works with Anthropic, Mistral, Gemini, or any other client —
+mnueron doesn't know or care which LLM you're using.
+
+## Use it in your apps (.NET / C#)
+
+```csharp
+using Mnueron;
+
+using var mem = new MnueronClient("mnu_...");
+var context = await mem.SearchAsync(question, $"user-{userId}", k: 5);
+// Call any LLM API with `context` injected into the prompt
+await mem.SaveAsync(newFact, $"user-{userId}");
+```
+
+Single-file C# client. Drop `MnueronClient.cs` into any .NET 6+ project. No
+NuGet package required.
+
+## CLI reference
+
+```
+mnueron setup                       Detect and configure all installed AI tools
+       [--only <tool>]                claude-desktop | claude-code | cursor | windsurf | cline
+       [--hosted <url> --token <t>]   Hosted mode instead of local SQLite
+       [--dry-run]                    Show what would change
+       [--uninstall]                  Remove from all detected tools
+mnueron import <file>               Bulk-import a Claude/OpenAI export
+mnueron search <query>              Quick terminal search
+mnueron stats                       Counts by namespace
+mnueron namespaces                  List namespaces
+```
+
+## Two modes
+
+**Local (default).** All memories live in `~/.mnueron/memories.db` (SQLite +
+FTS5 full-text search). Free forever. Single-machine. Nothing leaves your
+computer. The right choice for personal use, regulated work, or anyone who
+doesn't want a hosted account.
+
+**Hosted.** Set `MNUERON_API_URL` and `MNUERON_API_TOKEN`. Same MCP client,
+now reading and writing to a hosted backend you control. Multi-machine sync
+across laptop/desktop/work box. Team sharing. Multi-tenant for SaaS deployment.
+
+To flip a machine to hosted mode:
+
+```bash
+mnueron setup --hosted https://api.your-mnueron.com --token mnu_xxx
+```
+
+## Self-host the hosted backend
+
+The hosted backend in `server/` is yours — multi-tenant Postgres + pgvector
+with row-level security. Step-by-step on Supabase free tier in
+`server/SUPABASE_SETUP.md` (~15 minutes from empty database to working API).
+
+```bash
+# Quick start (Supabase recommended over RDS — see SUPABASE_SETUP.md)
+psql $DATABASE_URL < server/supabase_schema.sql
+cd server && npm install && npx tsx index.ts
+```
+
+## Supported AI dev tools
+
+| Tool | Auto-configured | Notes |
+| --- | --- | --- |
+| Claude Desktop | ✓ | All platforms (macOS, Windows, Linux) |
+| Claude Code | ✓ | Uses `claude mcp add` CLI when available |
+| Cursor | ✓ | `~/.cursor/mcp.json` |
+| Windsurf | ✓ | `~/.codeium/windsurf/mcp_config.json` |
+| Cline (VS Code) | ✓ | VS Code globalStorage |
+| Aider, OpenCode, Goose, Continue.dev, Zed | manual | All speak MCP |
+
+## Repo layout
+
+```
+mnueron/
+├── src/                        Local MCP server (Node, stdio)
+│   ├── index.ts                Server entry point
+│   ├── cli.ts                  setup | import | search | stats
+│   ├── setup.ts                1-click wizard orchestration
+│   ├── detectors/              One file per supported dev tool
+│   ├── tools.ts                MCP tool definitions + handlers
+│   ├── config.ts               Local vs remote provider switch
+│   ├── store/                  Storage providers (SQLite local, HTTP remote)
+│   └── import/                 Claude / OpenAI export parsers
+├── server/                     Hosted multi-tenant backend
+│   ├── schema.sql              Standalone Postgres schema
+│   ├── supabase_schema.sql     Supabase-adapted schema
+│   ├── index.ts                Express reference implementation
+│   ├── README.md
+│   └── SUPABASE_SETUP.md       15-minute step-by-step
+├── sdks/
+│   ├── python/                 Python SDK (sync + async)
+│   │   ├── mnueron.py
+│   │   ├── pyproject.toml
+│   │   └── README.md
+│   └── csharp/                 .NET / C# SDK
+│       ├── MnueronClient.cs
+│       └── README.md
+├── INSTALL.md                  Full install guide (this is what most users read)
+├── ARCHITECTURE.md             Multi-tenant design + threat model
+├── LICENSE                     MIT
+└── README.md                   You're here
+```
+
+## License
+
+MIT. Fork, embed, modify, sell — whatever. The hosted commercial offering
+(when it exists) is separate from this code; the OSS path is supported
+indefinitely.
+
+## Status
+
+Pre-alpha — works end-to-end but is still being shaped. If you find a rough
+edge, file an issue; if you fix it, PRs welcome.

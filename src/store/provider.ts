@@ -1,0 +1,58 @@
+/**
+ * Provider interface — the same shape whether storage is local SQLite or a
+ * remote multi-tenant HTTP backend. The MCP server uses this; swapping
+ * providers is a one-line change.
+ */
+
+export interface Memory {
+  id: string;
+  namespace: string;
+  content: string;
+  tags: string[];
+  source: string;          // 'manual' | 'claude-export' | 'openai-export' | 'hook' | 'agent'
+  source_ref?: string;     // original conversation id, file path, etc.
+  metadata?: Record<string, unknown>;
+  score?: number;          // populated on search results (BM25 rank or cosine sim)
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SaveMemoryInput {
+  content: string;
+  namespace?: string;
+  tags?: string[];
+  source?: string;
+  source_ref?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SearchInput {
+  query: string;
+  namespace?: string;
+  k?: number;
+  tags?: string[];
+}
+
+export interface ListInput {
+  namespace?: string;
+  limit?: number;
+  before?: number;       // unix ms cursor
+  tags?: string[];
+}
+
+export interface NamespaceInfo {
+  name: string;
+  count: number;
+  last_updated: number;
+}
+
+export interface Provider {
+  save(input: SaveMemoryInput): Promise<Memory>;
+  search(input: SearchInput): Promise<Memory[]>;
+  list(input: ListInput): Promise<Memory[]>;
+  get(id: string): Promise<Memory | null>;
+  delete(id: string): Promise<boolean>;
+  namespaces(): Promise<NamespaceInfo[]>;
+  bulkSave(inputs: SaveMemoryInput[]): Promise<{ saved: number; errors: number }>;
+  close(): Promise<void>;
+}

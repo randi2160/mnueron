@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__mnueron__memory_recall",
+      "mcp__mnueron__memory_list",
+      "mcp__mnueron__memory_namespaces",
+      "Bash(python3 *)"
+    ]
+  }
+}

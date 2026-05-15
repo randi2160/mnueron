@@ -1,0 +1,33 @@
+{
+  "name": "mnueron-plugin-redact-pii",
+  "version": "0.1.0",
+  "description": "Strips emails, phone numbers, credit card numbers, and AWS keys from memories before they're saved. Sample MNUERON plugin.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "mnueron": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  },
+  "keywords": ["mnueron", "mnueron-plugin", "security", "pii", "redaction"],
+  "license": "MIT",
+  "mnueron": {
+    "category": "processor",
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "redactEmail":      { "type": "boolean", "default": true },
+        "redactPhone":      { "type": "boolean", "default": true },
+        "redactCreditCard": { "type": "boolean", "default": true },
+        "redactAwsKey":     { "type": "boolean", "default": true },
+        "addRedactedTag":   { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

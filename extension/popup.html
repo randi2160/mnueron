@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>mnueron</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    width: 320px;
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #0f1115;
+    color: #d6dae3;
+  }
+  header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid #1f2330;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header .brand {
+    font-weight: 600;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  header .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #5cffb0; box-shadow: 0 0 6px #5cffb0;
+  }
+  .dot.off { background: #5a606e; box-shadow: none; }
+  header .settings {
+    color: #6c7488;
+    text-decoration: none;
+    font-size: 12px;
+  }
+  header .settings:hover { color: #d6dae3; }
+
+  section { padding: 12px 16px; border-bottom: 1px solid #161a26; }
+  .status-line {
+    display: flex; justify-content: space-between;
+    color: #8a92a6; font-size: 12px;
+    margin: 2px 0;
+  }
+  .status-line .v { color: #d6dae3; font-variant-numeric: tabular-nums; }
+
+  .site {
+    color: #6c7488;
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .site .name { color: #c4cad6; font-weight: 500; }
+
+  button {
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid #3a5cf0;
+    background: #3a5cf0;
+    color: #fff;
+    font-weight: 500;
+    font: inherit;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  button:hover:not(:disabled) { background: #4a6bff; }
+  button:disabled {
+    background: #1d2230;
+    border-color: #232938;
+    color: #6c7488;
+    cursor: not-allowed;
+  }
+  button.secondary {
+    background: #1d2230;
+    border-color: #232938;
+    color: #d6dae3;
+    margin-top: 8px;
+    font-weight: 400;
+  }
+  button.secondary:hover { background: #232938; }
+
+  .toast {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    display: none;
+  }
+  .toast.show { display: block; }
+  .toast.ok  { background: #15301f; color: #a6ffc4; border: 1px solid #2a5a3a; }
+  .toast.err { background: #2a151b; color: #ffa6b0; border: 1px solid #5a2530; }
+
+  .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8a92a6; margin: 6px 0 0; }
+  .row input[type=checkbox] { accent-color: #3a5cf0; }
+  footer { padding: 10px 16px; font-size: 11px; color: #6c7488; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span id="status-dot" class="dot off"></span> mnueron</div>
+  <a href="#" id="open-options" class="settings">Settings</a>
+</header>
+
+<section>
+  <div class="site" id="site-line">Detecting page…</div>
+  <button id="capture-btn" disabled>Capture chat</button>
+  <button class="secondary" id="open-dashboard">Open dashboard</button>
+  <div class="toast" id="toast"></div>
+</section>
+
+<section id="backfill-section" style="display:none">
+  <div class="site"><span class="name">Backfill</span> — import every past Claude chat</div>
+  <button id="backfill-btn">Backfill all history</button>
+  <div id="backfill-progress" style="display:none; margin-top:10px; font-size:12px; color:#8a92a6">
+    <div id="backfill-line">Starting…</div>
+    <div style="background:#1d2230; height:6px; border-radius:3px; margin-top:6px; overflow:hidden">
+      <div id="backfill-bar" style="background:#3a5cf0; height:100%; width:0%; transition:width .2s"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="status-line"><span>Backend</span><span class="v" id="backend-line">checking…</span></div>
+  <div class="status-line"><span>Captures today</span><span class="v" id="today-line">0</span></div>
+  <div class="row">
+    <input type="checkbox" id="auto-toggle" />
+    <label for="auto-toggle">Auto-capture (passive)</label>
+  </div>
+</section>
+
+<footer>
+  mnueron · local-first AI memory
+</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>

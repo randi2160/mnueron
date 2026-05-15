@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>mnueron — settings</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #0f1115;
+    color: #d6dae3;
+    padding: 36px 20px;
+  }
+  .container {
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 { margin: 0 0 6px; font-size: 22px; color: #fff; }
+  .sub { color: #8a92a6; margin: 0 0 28px; font-size: 13px; }
+
+  fieldset {
+    border: 1px solid #1f2330;
+    border-radius: 10px;
+    padding: 18px 18px 8px;
+    margin: 0 0 18px;
+    background: #11141c;
+  }
+  legend { padding: 0 8px; color: #c4cad6; font-size: 13px; }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: #8a92a6;
+    margin: 0 0 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .field { margin-bottom: 14px; }
+  input[type=text], input[type=url], input[type=password] {
+    width: 100%;
+    background: #0a0c10;
+    border: 1px solid #232938;
+    border-radius: 6px;
+    padding: 9px 12px;
+    color: #fff;
+    font: inherit;
+    outline: none;
+  }
+  input:focus { border-color: #3a5cf0; }
+
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    margin: 8px 0;
+  }
+  .row label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; color: #d6dae3; }
+
+  .actions { display: flex; gap: 10px; margin-top: 20px; }
+  button {
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid #3a5cf0;
+    background: #3a5cf0;
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: #4a6bff; }
+  button.secondary {
+    background: #1d2230;
+    border-color: #232938;
+    color: #d6dae3;
+  }
+  button.secondary:hover { background: #232938; }
+
+  .toast {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: none;
+  }
+  .toast.show { display: block; }
+  .toast.ok  { background: #15301f; color: #a6ffc4; border: 1px solid #2a5a3a; }
+  .toast.err { background: #2a151b; color: #ffa6b0; border: 1px solid #5a2530; }
+
+  small { color: #6c7488; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>mnueron settings</h1>
+  <p class="sub">Where the extension sends captured chats, and which sites it captures from.</p>
+
+  <fieldset>
+    <legend>Local backend</legend>
+    <div class="field">
+      <label>Local mnueron URL</label>
+      <input type="url" id="local_url" placeholder="http://localhost:3122" />
+      <small>Default <code>http://localhost:3122</code>. Run <code>mnueron dashboard</code> in a terminal to start it.</small>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Hosted backend (optional)</legend>
+    <div class="field">
+      <label>Hosted URL</label>
+      <input type="url" id="hosted_url" placeholder="https://api.your-mnueron.com" />
+    </div>
+    <div class="field">
+      <label>Bearer token</label>
+      <input type="password" id="hosted_token" placeholder="mnu_…" />
+    </div>
+    <div class="row">
+      <input type="checkbox" id="prefer_hosted" />
+      <label for="prefer_hosted">Use hosted backend instead of local</label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Capture behavior</legend>
+    <div class="field">
+      <label>Namespace prefix</label>
+      <input type="text" id="namespace_prefix" placeholder="web" />
+      <small>Memories save under <code>&lt;prefix&gt;-&lt;site&gt;</code>, e.g. <code>web-claude</code>.</small>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="auto_capture" />
+      <label for="auto_capture">Auto-capture chats in the background (experimental)</label>
+    </div>
+  </fieldset>
+
+  <div class="actions">
+    <button id="save">Save</button>
+    <button class="secondary" id="test">Test connection</button>
+  </div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

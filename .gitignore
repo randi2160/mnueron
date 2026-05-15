@@ -1,0 +1,51 @@
+# Node
+node_modules/
+dist/
+*.log
+npm-debug.log*
+.npm/
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+server/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.tox/
+venv/
+.venv/
+build/
+*.egg
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# Local mnueron data (don't commit memories!)
+.mnueron/
+**/.mnueron/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

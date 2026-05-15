@@ -1,15 +1,11 @@
 <p align="center">
-  <img src="assets/mnueron-logo.png" alt="mnueron" width="360" />
+  <img src="assets/mnueron-logo.png" alt="mnueron — memory for every AI" width="280" />
 </p>
 
-<h1 align="center">MNUERON</h1>
-
 <p align="center"><strong>One memory layer. Every LLM. Every dev tool. Every app you build.</strong></p>
+<p align="center"><sub>Persistent memory for Claude Desktop · Claude Code · Cursor · Windsurf · Cline — local-first, free forever, open source (MIT).</sub></p>
 
-Persistent memory for Claude Desktop, Claude Code, Cursor, Windsurf, Cline —
-and any app you build with OpenAI, Anthropic, Mistral, or anything else.
-Local-first and free forever. Optional hosted backend for cross-machine sync,
-team sharing, and multi-tenant deployments.
+---
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -39,6 +35,46 @@ What changes day-to-day:
 - **In Claude Desktop / Cursor:** A new chat starts knowing your project conventions, past decisions, and where you left off.
 - **In your apps:** When a user comes back, the AI already knows their preferences — without you wiring it up per-provider.
 - **Across providers:** Switch from OpenAI to Claude to Mistral without losing your customer's history. The memory layer is the constant.
+
+## What you get out of the box — free, forever
+
+Run `mnueron setup` and every single one of these is yours. No account, no credit card, no telemetry. Your data lives at `~/.mnueron/memories.db` and never leaves your computer unless you explicitly opt into hosted mode.
+
+| ✓ | What | Why it matters |
+| :-: | --- | --- |
+| ✓ | **Local MCP server** with six tools (`memory_save`, `memory_recall`, `memory_get`, `memory_list`, `memory_delete`, `memory_namespaces`) | Wires into Claude Desktop, Claude Code, Cursor, Windsurf, Cline. One memory layer, every tool. |
+| ✓ | **One-command setup wizard** | Auto-detects every installed AI dev tool and configures each. Restart, you're live. |
+| ✓ | **Hybrid local search** — BM25 keyword (SQLite FTS5) + semantic vector (Transformers.js + sqlite-vec) | Find memories by meaning, not just keywords. No OpenAI API key, no cloud calls, runs on CPU. |
+| ✓ | **Web dashboard** (`mnueron dashboard`) | Browse, search, delete, drag-drop import — all from `localhost:3122`. |
+| ✓ | **Chrome extension** for claude.ai and chatgpt.com | One-click **Capture chat** button. One-click **Backfill all history** — pulls your entire past claude.ai conversation list via their internal API in ~60 seconds. |
+| ✓ | **Bulk importer** for Claude and ChatGPT export JSON files | Bring months of conversation history in one command. |
+| ✓ | **Python + C# SDKs** | Use mnueron from your own apps with three lines of code. Provider-agnostic (works with OpenAI, Anthropic, Mistral, anything). |
+| ✓ | **Plugin system** | Bring your own processors — PII redaction example included. |
+| ✓ | **Self-host the hosted backend** | The multi-tenant Postgres + pgvector + RLS code in `server/` is yours. Run it on your own VPC if you want all the features below without paying us. |
+
+All MIT-licensed. Fork, embed, modify, sell — whatever.
+
+## Optional upgrade — hosted plan
+
+When you want cross-machine sync or are running this for a team, the hosted plan handles it. Same client code; one env-var flip.
+
+| Feature | Local (free) | Hosted |
+| --- | :-: | :-: |
+| All the local capabilities above | ✓ | ✓ |
+| Cross-machine sync (laptop / desktop / work box) | — | ✓ |
+| Hosted web dashboard with login | — | ✓ |
+| Team / org-shared namespaces, role-based access | — | ✓ |
+| Audit log + retention policies | — | ✓ |
+| Embedding into your own SaaS (multi-tenant API) | self-host | ✓ |
+| SSO / SAML, BAAs, SLAs | — | enterprise tier |
+
+Pricing: **$9/mo Personal · $19/mo Pro · $25/user/mo Team · custom Enterprise**. See [PLAN.md](PLAN.md#6-pricing-model) for the full breakdown.
+
+To flip a machine to hosted mode:
+
+```bash
+mnueron setup --hosted https://api.your-mnueron.com --token mnu_xxx
+```
 
 ## Install in one command
 
@@ -152,23 +188,6 @@ mnueron import <file>               Bulk-import a Claude/OpenAI export
 mnueron search <query>              Quick terminal search
 mnueron stats                       Counts by namespace
 mnueron namespaces                  List namespaces
-```
-
-## Two modes
-
-**Local (default).** All memories live in `~/.mnueron/memories.db` (SQLite +
-FTS5 full-text search). Free forever. Single-machine. Nothing leaves your
-computer. The right choice for personal use, regulated work, or anyone who
-doesn't want a hosted account.
-
-**Hosted.** Set `MNUERON_API_URL` and `MNUERON_API_TOKEN`. Same MCP client,
-now reading and writing to a hosted backend you control. Multi-machine sync
-across laptop/desktop/work box. Team sharing. Multi-tenant for SaaS deployment.
-
-To flip a machine to hosted mode:
-
-```bash
-mnueron setup --hosted https://api.your-mnueron.com --token mnu_xxx
 ```
 
 ## Self-host the hosted backend

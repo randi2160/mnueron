@@ -17,6 +17,9 @@
  *   MNUERON_API_URL=https://api.your-mnueron.com
  *   MNUERON_API_TOKEN=mn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
  */
+// Load server/.env (DATABASE_URL, ADMIN_DATABASE_URL, PORT, ANTHROPIC_API_KEY, ...).
+// Safe to call even when the file doesn't exist — dotenv just no-ops.
+import 'dotenv/config';
 import express from 'express';
 import { Pool, PoolClient } from 'pg';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
@@ -34,6 +37,10 @@ const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://localhost:5432/mnue
 // (Supabase: the service_role pooler URL). If unset, falls back to DATABASE_URL.
 const ADMIN_DATABASE_URL = process.env.ADMIN_DATABASE_URL ?? DATABASE_URL;
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '10', 10);
+// Which Postgres role to SET ROLE to inside withTenantScope so Row-Level
+// Security applies. Standalone schema.sql uses `mnueron_app`; Supabase uses
+// `authenticated` (their preconfigured RLS role). Override per-deployment.
+const APP_ROLE = process.env.MNUERON_APP_ROLE ?? 'mnueron_app';
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 const adminPool = new Pool({ connectionString: ADMIN_DATABASE_URL });
@@ -89,7 +96,9 @@ async function withTenantScope<T>(
     // Set the GUC. set_config(name, value, is_local=true) keeps it for this txn only.
     await client.query(`SELECT set_config('app.current_org_id', $1, false)`, [ctx.orgId]);
     // Switch to the restricted role so RLS policies apply.
-    await client.query(`SET ROLE mnueron_app`);
+    // Role name is configurable via MNUERON_APP_ROLE (default `mnueron_app`,
+    // Supabase deployments should set this to `authenticated`).
+    await client.query(`SET ROLE ${quoteIdent(APP_ROLE)}`);
     return await fn(client);
   } finally {
     await client.query(`RESET ROLE`).catch(() => {});
@@ -594,6 +603,64 @@ app.get('/v1/namespaces', authMiddleware, async (req, res) => {
   })));
 });
 
+// GET /v1/memories — list (used by the dashboard's empty-query browse view).
+// Optional query params: namespace, limit (1–500, default 50), offset.
+// Returns the newest memories first.
+app.get('/v1/memories', authMiddleware, async (req, res) => {
+  const namespace = (typeof req.query.namespace === 'string' && req.query.namespace) || null;
+  const limit = clampInt(req.query.limit, 50, 1, 500);
+  const offset = clampInt(req.query.offset, 0, 0, 100_000);
+  const rows = await withTenantScope(req.auth!, async (c) => {
+    const r = await c.query(
+      `SELECT m.*, ns.name AS namespace_name
+         FROM memories m
+         JOIN namespaces ns ON ns.id = m.namespace_id
+        WHERE ($1::text IS NULL OR ns.name = $1)
+        ORDER BY m.updated_at DESC
+        LIMIT $2 OFFSET $3`,
+      [namespace, limit, offset],
+    );
+    return r.rows;
+  });
+  res.json(rows.map(serializeMemoryRow));
+});
+
+// GET /v1/memories/:id — single memory by id.
+app.get('/v1/memories/:id', authMiddleware, async (req, res) => {
+  const rows = await withTenantScope(req.auth!, async (c) => {
+    const r = await c.query(
+      `SELECT m.*, ns.name AS namespace_name
+         FROM memories m
+         JOIN namespaces ns ON ns.id = m.namespace_id
+        WHERE m.id = $1`,
+      [req.params.id],
+    );
+    return r.rows;
+  });
+  if (rows.length === 0) { res.status(404).json({ error: 'not found' }); return; }
+  res.json(serializeMemoryRow(rows[0]));
+});
+
+// GET /v1/stats — totals for the dashboard header. Computed from namespaces,
+// so this is one fast aggregate query, not a scan of memories.
+app.get('/v1/stats', authMiddleware, async (req, res) => {
+  const stats = await withTenantScope(req.auth!, async (c) => {
+    const r = await c.query(
+      `SELECT
+          COUNT(m.*)::int                                    AS total,
+          COUNT(DISTINCT m.namespace_id)::int                AS namespaces,
+          COALESCE(MAX(EXTRACT(EPOCH FROM m.updated_at) * 1000), 0)::bigint AS latest
+         FROM memories m`,
+    );
+    return r.rows[0];
+  });
+  res.json({
+    total: Number(stats.total ?? 0),
+    namespaces: Number(stats.namespaces ?? 0),
+    latest: Number(stats.latest ?? 0),
+  });
+});
+
 // DELETE /v1/memories/:id
 app.delete('/v1/memories/:id', authMiddleware, async (req, res) => {
   await withTenantScope(req.auth!, async (c) => {
@@ -607,7 +674,79 @@ app.delete('/v1/memories/:id', authMiddleware, async (req, res) => {
   res.status(204).end();
 });
 
+// ---------------------------------------------------------------------------
+// Helpers used by the read endpoints above. Kept at the bottom so the route
+// definitions read top-down without forward-reference noise.
+// ---------------------------------------------------------------------------
+
+/**
+ * Quote a Postgres identifier (role / table / column name) so we can safely
+ * interpolate user / env-supplied values into DDL-style statements. Throws
+ * on anything that doesn't look like a legal identifier — defence in depth
+ * against environment-variable injection.
+ */
+function quoteIdent(name: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(`invalid identifier: ${name}`);
+  }
+  return `"${name}"`;
+}
+
+/** Parse an unknown (string|string[]|undefined) query value into a clamped int. */
+function clampInt(s: unknown, dflt: number, min: number, max: number): number {
+  if (typeof s !== 'string') return dflt;
+  const n = parseInt(s, 10);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Reshape a memories+namespaces row into the JSON wire format the dashboard
+ * expects. Centralised so list / get / search all return the same shape.
+ */
+function serializeMemoryRow(r: any) {
+  return {
+    id: r.id,
+    namespace: r.namespace_name ?? r.namespace,
+    content: r.content,
+    tags: r.tags ?? [],
+    source: r.source,
+    source_ref: r.source_ref ?? undefined,
+    metadata: r.metadata ?? undefined,
+    score: r.score ?? undefined,
+    created_at: +new Date(r.created_at),
+    updated_at: +new Date(r.updated_at),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Global safety nets — a single failed query must not crash the whole
+// process. In dev this is annoying (the Next dev server gets killed via
+// concurrently --kill-others-on-fail); in prod it's a partial outage.
+// ---------------------------------------------------------------------------
+
+// Express 4: async handler rejections aren't auto-caught. Wrap them so any
+// error response gets logged + returns a clean 500 JSON to the client.
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // eslint-disable-next-line no-console
+  console.error('[mnueron] unhandled error:', err?.message ?? err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: err?.message ?? 'internal error' });
+  }
+});
+
+process.on('unhandledRejection', (reason) => {
+  // eslint-disable-next-line no-console
+  console.error('[mnueron] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  // eslint-disable-next-line no-console
+  console.error('[mnueron] uncaughtException:', err);
+});
+
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`mnueron-server listening on :${PORT}`);
+  // eslint-disable-next-line no-console
+  console.log(`mnueron-server using role: ${APP_ROLE}`);
 });

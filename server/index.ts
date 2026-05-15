@@ -24,6 +24,7 @@ import bcrypt from 'bcryptjs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { summarizeMemory, summarizeBatch } from './summarizer.js';
 
 const PORT = parseInt(process.env.PORT ?? '3111', 10);
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://localhost:5432/mnueron';
@@ -388,9 +389,26 @@ app.delete('/v1/auth/tokens/:id', authMiddleware, async (req, res) => {
 
 // POST /v1/memories — save one
 app.post('/v1/memories', authMiddleware, async (req, res) => {
-  const { content, namespace = 'default', tags = [], source = 'agent', source_ref, metadata } = req.body ?? {};
-  if (typeof content !== 'string' || !content) { res.status(400).json({ error: 'content required' }); return; }
-  const embedding = await embed(content);
+  const raw = req.body ?? {};
+  if (typeof raw.content !== 'string' || !raw.content) {
+    res.status(400).json({ error: 'content required' });
+    return;
+  }
+  // W3: run summarizer transform first. If summarization is configured
+  // (ANTHROPIC_API_KEY set) and content qualifies (long enough + matching
+  // role), this replaces `content` with a high-signal summary and stashes
+  // the original in `metadata.original_content`. Otherwise it returns the
+  // input unchanged (fail-open).
+  const input = await summarizeMemory({
+    content: raw.content,
+    namespace: raw.namespace ?? 'default',
+    tags: raw.tags ?? [],
+    source: raw.source ?? 'agent',
+    source_ref: raw.source_ref,
+    metadata: raw.metadata,
+  });
+  // Embed AFTER summarization so the vector reflects what's actually stored.
+  const embedding = await embed(input.content);
 
   const result = await withTenantScope(req.auth!, async (c) => {
     // upsert namespace
@@ -398,7 +416,7 @@ app.post('/v1/memories', authMiddleware, async (req, res) => {
       `INSERT INTO namespaces (org_id, name) VALUES ($1, $2)
          ON CONFLICT (org_id, name) DO UPDATE SET name = EXCLUDED.name
        RETURNING id`,
-      [req.auth!.orgId, namespace],
+      [req.auth!.orgId, input.namespace],
     );
     const namespaceId = nsr.rows[0].id;
     const r = await c.query(
@@ -408,7 +426,8 @@ app.post('/v1/memories', authMiddleware, async (req, res) => {
        RETURNING id, created_at, updated_at`,
       [
         req.auth!.orgId, namespaceId, req.auth!.userId,
-        content, tags, source, source_ref ?? null, metadata ?? {},
+        input.content, input.tags ?? [], input.source ?? 'agent',
+        input.source_ref ?? null, input.metadata ?? {},
         embedding ? `[${embedding.join(',')}]` : null,
       ],
     );
@@ -420,8 +439,17 @@ app.post('/v1/memories', authMiddleware, async (req, res) => {
     return r.rows[0];
   });
 
-  res.json({ id: result.id, namespace, content, tags, source, source_ref,
-             created_at: +new Date(result.created_at), updated_at: +new Date(result.updated_at) });
+  res.json({
+    id: result.id,
+    namespace: input.namespace,
+    content: input.content,
+    tags: input.tags ?? [],
+    source: input.source,
+    source_ref: input.source_ref,
+    metadata: input.metadata,
+    created_at: +new Date(result.created_at),
+    updated_at: +new Date(result.updated_at),
+  });
 });
 
 // POST /v1/memories/search — hybrid recall
@@ -502,9 +530,23 @@ app.post('/v1/memories/bulk', authMiddleware, async (req, res) => {
   const items = (req.body?.items ?? []) as any[];
   if (!Array.isArray(items)) { res.status(400).json({ error: 'items[] required' }); return; }
 
+  // W3: run summarizer in parallel across the batch BEFORE inserting.
+  // summarizeBatch is fail-open per-item — failures fall through to the
+  // original content.
+  const transformed = await summarizeBatch(
+    items.map(it => ({
+      content: String(it.content ?? ''),
+      namespace: it.namespace ?? 'default',
+      tags: it.tags ?? [],
+      source: it.source ?? 'import',
+      source_ref: it.source_ref,
+      metadata: it.metadata,
+    })),
+  );
+
   let saved = 0, errors = 0;
   await withTenantScope(req.auth!, async (c) => {
-    for (const item of items) {
+    for (const item of transformed) {
       try {
         const ns = item.namespace ?? 'default';
         const nsr = await c.query(

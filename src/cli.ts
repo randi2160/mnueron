@@ -32,6 +32,7 @@ async function main() {
     case 'rebuild-embeddings': return cmdRebuildEmbeddings(rest);
     case 'rechunk':      return cmdRechunk(rest);
     case 'migrate-to-hosted': return cmdMigrateToHosted(rest);
+    case 'plugin':       return cmdPlugin(rest);
     case 'help':
     case '--help':
     case '-h':
@@ -76,6 +77,12 @@ Commands:
        [--namespace <name>]         Filter to one namespace if you only want a subset.
        [--dry-run]
        [--no-flip]                  Upload but don't change the active provider.
+  mnueron plugin <action> [name]  Manage plugins enabled in ~/.mnueron/config.json
+       list                         Show enabled + installed plugins.
+       enable <name>                Add to enabledPlugins list.
+       disable <name>               Remove from enabledPlugins list.
+       add <name>                   Alias for enable; also reminds about npm install.
+       remove <name>                Alias for disable.
 
 Environment:
   MNUERON_DB_PATH    Local SQLite location (default: ~/.mnueron/memories.db)
@@ -368,6 +375,73 @@ async function cmdRechunk(args: string[]) {
   if (errors > 0) console.log(`      ${errors} errors`);
   console.log(`\n  Next: run 'mnueron rebuild-embeddings' so the new chunks have vectors.\n`);
   await provider.close();
+}
+
+async function cmdPlugin(args: string[]) {
+  const action = args[0] ?? 'list';
+  const name = args[1];
+
+  const { listEnabledPlugins, enablePlugin, disablePlugin } = await import('./plugins/loader.js');
+
+  switch (action) {
+    case 'list': {
+      const enabled = await listEnabledPlugins();
+      if (enabled.length === 0) {
+        console.log('No plugins enabled. Try:');
+        console.log('  npm install -g mnueron-plugin-redact-pii    # install');
+        console.log('  mnueron plugin enable mnueron-plugin-redact-pii');
+        return;
+      }
+      console.log(`Enabled plugins (${enabled.length}):`);
+      for (const n of enabled) {
+        // Check whether the plugin's npm package is actually resolvable.
+        let resolved: string | null = null;
+        try {
+          const { createRequire } = await import('node:module');
+          const require = createRequire(import.meta.url);
+          resolved = require.resolve(n + '/package.json');
+        } catch { /* not installed */ }
+        const status = resolved ? '✓ installed' : '✗ NOT installed (npm install ' + n + ')';
+        console.log(`  ${n.padEnd(40)}  ${status}`);
+      }
+      return;
+    }
+    case 'enable':
+    case 'add': {
+      if (!name) {
+        console.error('Usage: mnueron plugin enable <name>');
+        process.exit(1);
+      }
+      await enablePlugin(name);
+      console.log(`✓ Enabled ${name} in ~/.mnueron/config.json`);
+      // Check whether it's installed; warn if not.
+      try {
+        const { createRequire } = await import('node:module');
+        const require = createRequire(import.meta.url);
+        require.resolve(name + '/package.json');
+        console.log('  Plugin package is installed — will activate on next MCP server start.');
+      } catch {
+        console.log(`  Plugin package is NOT installed yet. Run:`);
+        console.log(`    npm install -g ${name}`);
+      }
+      console.log(`  Restart any running mnueron processes (Claude Code, dashboard) to pick it up.`);
+      return;
+    }
+    case 'disable':
+    case 'remove': {
+      if (!name) {
+        console.error('Usage: mnueron plugin disable <name>');
+        process.exit(1);
+      }
+      await disablePlugin(name);
+      console.log(`✓ Disabled ${name} in ~/.mnueron/config.json`);
+      console.log(`  Restart any running mnueron processes to drop it.`);
+      return;
+    }
+    default:
+      console.error(`Unknown action "${action}". Try: list | enable | disable | add | remove`);
+      process.exit(1);
+  }
 }
 
 async function cmdMigrateToHosted(args: string[]) {

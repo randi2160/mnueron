@@ -31,7 +31,7 @@
  *   // ... then pass `transformed` to the storage layer
  */
 import Anthropic from '@anthropic-ai/sdk';
-import type { SaveMemoryInput } from './types.js';   // adjust import to wherever your SaveMemoryInput lives
+import type { SaveMemoryInput } from '../src/store/provider.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -64,8 +64,27 @@ const DEFAULTS: SummarizationOptions = {
   maxSummaryTokens: 200,
 };
 
-// Singleton Anthropic client. Reads ANTHROPIC_API_KEY from env.
-const anthropic = new Anthropic();
+// Lazy singleton Anthropic client. Reads ANTHROPIC_API_KEY from env.
+// If the key is missing, `getClient()` returns null and the summarizer
+// silently no-ops (returns input unchanged). Server won't crash on boot
+// just because someone forgot to set the key.
+let _anthropic: Anthropic | null = null;
+let _anthropicTried = false;
+function getClient(): Anthropic | null {
+  if (_anthropicTried) return _anthropic;
+  _anthropicTried = true;
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn('[summarizer] ANTHROPIC_API_KEY not set — summarization disabled (no-op).');
+    return null;
+  }
+  try {
+    _anthropic = new Anthropic();
+    return _anthropic;
+  } catch (e: any) {
+    console.warn('[summarizer] Anthropic client init failed:', e?.message);
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -158,8 +177,10 @@ async function callLlmForSummary(
   content: string,
   opts: SummarizationOptions,
 ): Promise<string> {
+  const client = getClient();
+  if (!client) return '';   // no Anthropic key configured — silent no-op
   const prompt = SUMMARIZATION_PROMPT.replace('%CONTENT%', content);
-  const resp = await anthropic.messages.create({
+  const resp = await client.messages.create({
     model: opts.model,
     max_tokens: opts.maxSummaryTokens,
     messages: [{ role: 'user', content: prompt }],

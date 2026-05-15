@@ -391,6 +391,27 @@ the optional hosted upgrade they don't.
 
 Phases reflect both engineering risk and product value.
 
+### Phase 0 — Wiring tasks (small, blocking)
+
+These three items are the lowest-effort, highest-leverage moves remaining.
+The code is already in the repo from the v0.1.9 merge; we just haven't
+connected the wires.
+
+- **W1. Wire plugin loader into MCP server startup.**
+  `src/index.ts` — import `loadPlugins` from `./plugins/loader.js`, call at
+  startup, register processors against save/recall paths. Acceptance:
+  enabled plugins actually run (test with the included redact-pii sample).
+- **W2. Add `mnueron plugin add | remove | list | enable | disable` CLI
+  subcommands.** `src/cli.ts` — underlying loader functions already exist.
+  Acceptance: `mnueron plugin enable mnueron-plugin-redact-pii` works
+  end-to-end and the next save runs the plugin.
+- **W3. Wire summarizer into save endpoints.** `server/index.ts` — the
+  ~6-line change is documented in `server/SUMMARIZATION.md`. Acceptance:
+  long assistant responses get summarized on save; original preserved in
+  `metadata.original_content`.
+
+These are roughly half a day total.
+
 ### Phase 1 — Polish foundation + close biggest gap ✅ COMPLETE
 
 1. **Local semantic search via Transformers.js.** ✓ shipped —
@@ -445,12 +466,215 @@ upgrade path to hosted.
 12. **Document ingestion** (drag .docx / .pdf / .xlsx → memory) on the dashboard.
 13. **Inject-into-claude.ai** via the Chrome extension (read-side capability).
 14. **Self-healing scrapers wired** (extension restructure, v0.1.9 Phase B).
-15. **Summarizer wired** into POST `/v1/memories` (v0.1.9 Phase C).
+15. **Summarizer wired** into POST `/v1/memories` (v0.1.9 Phase C — also W3).
 16. **JS/TS SDK** published to npm.
 17. **Team / invites flow** in cloud dashboard.
 18. **Audit log viewer** for Pro+ tiers.
 19. **JetBrains / native VS Code plugin** for IDEs without MCP.
 20. **Published benchmarks** vs. agentmemory, Mem0, etc.
+
+---
+
+## 8a. Platform API gaps (v0.2 — first thing real third-party apps will hit)
+
+Anyone building a meeting-notes app, research assistant, or CRM on top of
+mnueron will request these features within their first week. They're API-level,
+not UI:
+
+- **v0.2.1 — Date-range filtering on search.** Add `created_after` /
+  `created_before` to `search()`. Files: `server/index.ts`,
+  `src/store/local.ts`, `src/store/remote.ts`, all SDKs.
+- **v0.2.2 — Update endpoint.** `PATCH /v1/memories/:id`. Re-embed if
+  content changed. Log the change in `metadata.history[]` so the previous
+  version stays visible. Files: same as above.
+- **v0.2.3 — Bulk search (multi-query in one HTTP call).** `POST
+  /v1/memories/search/bulk` accepts `{queries:[...], namespace, k}` and
+  returns N result sets. Cuts latency for apps doing many concurrent
+  lookups (e.g. an agent generating 5 candidate questions and recalling
+  context for each).
+- **v0.2.4 — Metadata field filtering.** `mem.search("q",
+  metadata_filter={"speaker":"sarah"})`. Postgres: jsonb operators.
+  SQLite: `json_extract`. Files: same as v0.2.1.
+
+Estimated total: 1–2 focused sessions.
+
+## 8b. Claude Desktop local import (v0.2.5)
+
+The mnueron Chrome extension covers web chat (claude.ai, chatgpt.com).
+The desktop apps (Claude Desktop, etc.) leave a local cache that's
+currently inaccessible. Building an importer that reads it would let users
+pull months of desktop-app history into mnueron the same way the extension
+backfill pulled their claude.ai history.
+
+- **File:** `src/import/claude_desktop.ts` (new), `src/cli.ts` for the
+  `mnueron import --claude-desktop` flag.
+- **Investigate first:** cache location varies by platform.
+  - macOS: `~/Library/Application Support/Claude/`
+  - Windows: `%APPDATA%\Claude\`
+  - Linux: `~/.config/Claude/`
+  Format is TBD — could be SQLite, LevelDB, or JSON. The first session is
+  reverse-engineering it; second is wiring the import.
+
+## 8c. IDE coverage expansion (v0.2.7)
+
+Five small detectors at ~30 lines each. Each one expands `mnueron setup`'s
+auto-detection to one more popular MCP-compatible tool:
+
+- `src/detectors/continue.ts` — Continue.dev VS Code extension
+- `src/detectors/zed.ts` — Zed editor
+- `src/detectors/aider.ts` — Aider CLI
+- `src/detectors/goose.ts` — Block's Goose
+- `src/detectors/opencode.ts` — OpenCode CLI
+
+All wire into `src/detectors/index.ts` and use the existing
+`JsonMcpDetector` base class. About one focused session for all five.
+
+## 8d. Enterprise IDE coverage (v0.3.5, v0.3.6)
+
+Bigger projects, lower priority — defer until there's revenue or a clear
+enterprise customer asking.
+
+- **v0.3.5 Visual Studio extension (VSIX).** For Microsoft .NET shops. ~1–2
+  weekends. Wait for GitHub Copilot's MCP support timeline before starting;
+  may need to ship our own AI chat panel.
+- **v0.3.6 Native VS Code extension** (without Cline dependency). Lower
+  priority since the Cline-based path works.
+- **v0.2.8 JetBrains plugin** (IntelliJ / PyCharm / WebStorm / Rider). ~1
+  weekend with their plugin SDK.
+
+## 8e. Platform features (v0.3)
+
+These are what makes mnueron *the* memory layer rather than just *a* memory
+layer:
+
+- **v0.3.1 Webhook subscriptions.** `server/webhooks.ts` (new). Events:
+  `memory.saved | updated | deleted`, `summary.created`. Outbound HTTPS
+  POST with HMAC signature. Let third-party apps react to memory changes
+  in real time.
+- **v0.3.2 Plugin marketplace UI / directory.** Web page at
+  `plugins.mnueron.com` (subdomain on the hosted dashboard). Browse,
+  search, install instructions. Curated at first; community submissions
+  later. The plugin system is shipped; this is the discovery layer.
+- **v0.3.3 Reference meeting-notes app.** `examples/apps/meeting-notes/`
+  (new). Working app: Deepgram transcription + Claude/OpenAI processing
+  + mnueron storage. Deploy publicly. Open source. The flagship "this is
+  what you build on top of mnueron" demonstration.
+- **v0.3.4 Per-namespace performance tuning.** `server/PERFORMANCE.md`
+  documenting partitioning, index tuning, query optimization for >100K
+  memories per tenant.
+
+## 8f. Architecture principles (DON'T break these)
+
+Pinned to the plan so future decisions don't drift:
+
+1. **Never bake use-case-specific features into core.** Meeting-notes
+   features belong in plugins or downstream apps, not the core API.
+2. **Strict SDK versioning.** Once at 1.0, breaking changes require a
+   major bump + 6-month deprecation window.
+3. **Plugins are additive.** Removing a plugin must not lose data.
+4. **Local mode works without internet.** The free path stays viable
+   forever — no required cloud account.
+5. **Multi-tenant isolation enforced at the database level (RLS),** not
+   application. So an app-layer bug can't leak cross-tenant.
+6. **The HTTP API is the canonical surface.** MCP, browser extension, and
+   SDKs are peers calling the same endpoints.
+
+## 8g. Other pending items (carry-over)
+
+- **Async embedding worker.** Current sync embedding blocks writes at
+  scale. Move to a queue (BullMQ / Redis) so writes return in <50ms and
+  embeddings fill asynchronously.
+- **Server-side secret redaction at ingest.** We have client-side redaction
+  in `LocalProvider.save()`. Add the same to `server/index.ts` POST
+  `/v1/memories` for defense in depth — protects users of the hosted
+  backend who don't go through the local path.
+- **Cloud dashboard auth wiring** (signup / login pages against
+  `/v1/auth/*` endpoints in the ai-boilerplate-pro Next.js app).
+- **Browser extension content scripts** for `gemini.google.com`,
+  `perplexity.ai`, `mistral.ai/chat`. After the Chrome Web Store launch
+  validates the capture-and-recall model.
+- **Extension icon PNGs** — generate `icon-16.png`, `icon-48.png`,
+  `icon-128.png` for `extension/icons/` so it stops looking like a Chrome
+  default extension.
+
+## 8h. v0.4+ (advanced features, defer until revenue)
+
+- **v0.4.1 Time-decay / relevance scoring.** Boost recent memories, decay
+  old ones, configurable per namespace.
+- **v0.4.2 Multi-namespace search.** One query spans multiple namespaces
+  with weighted blending. For power users with many apps.
+- **v0.4.3 Audit logs for compliance customers.** Every API call logged
+  with actor + payload hash. SOC 2 / HIPAA-compatible. The
+  `audit_log` table already exists; needs an API + dashboard viewer.
+
+## 8i. Additions (proposed by Claude during the v0.2 review)
+
+Things I'd add to the spec that aren't there yet — judgment calls, drop any
+that don't fit your strategy:
+
+- **Public live demo on `mnueron.com/demo`.** A no-install, hosted sandbox
+  where visitors can save and recall a memory in 30 seconds. Conversion
+  multiplier for the marketing site.
+- **Onboarding flow** for first-time users — walks through capture +
+  recall the first time they open the dashboard. Detects "0 memories"
+  state and offers the Chrome extension install or the bulk-import path.
+- **Local LLM embedding option via Ollama.** We use Transformers.js
+  (ONNX, CPU-only). Add Ollama as an alternative backend for users who
+  already run it — faster on GPU machines, no second model needed.
+- **Export tool** — `mnueron export --format json | jsonl | sqlite`. For
+  portability, backup, and the "your data belongs to you" promise.
+- **Plugin SDK docs** — `BUILDING_PLUGINS.md`. Make it easy for outsiders
+  to write plugins. Currently only the redact-pii example exists; need a
+  proper how-to with patterns for the four hook points (write-time
+  processor, recall-time processor, external source, exporter).
+- **Mobile read-only viewer apps** (iOS + Android) — sees your hosted
+  memory, can search, can't write. Long-term, lowers the bar to "I trust
+  this with my memory."
+- **Memory share links** (hosted-only) — generate a URL that exposes one
+  memory or namespace to a specific person. Like Google Docs sharing.
+- **Backup + restore** — automatic daily snapshots of
+  `~/.mnueron/memories.db`, restore from any snapshot. Free local feature.
+- **Multi-LLM SDK examples** — explicit examples for OpenAI, Anthropic,
+  Mistral, Gemini using the SAME mnueron memory. Drives the "swap LLM,
+  keep memory" thesis.
+- **Capture from Slack / Discord / Notion AI** — next set of content
+  scripts beyond Gemini/Perplexity/Mistral. Team-tool category.
+- **Telemetry opt-in** — anonymized usage stats (counts of memories per
+  user, recall hit rates) to inform the product. Off by default.
+
+---
+
+## 9. Recommended execution sequence
+
+Updated end-to-end build order across everything in this plan:
+
+### Phase 0 (half a day) — wiring debt
+W1 plugin loader → W2 plugin CLI → W3 summarizer wiring.
+
+### Phase 2A (1–2 sessions) — platform API gaps
+v0.2.1 date-range + v0.2.2 update endpoint + v0.2.3 bulk search +
+v0.2.4 metadata filter — the four moves any real app will request.
+
+### Phase 2B (1 session) — IDE coverage breadth
+v0.2.7 — five small detectors (Continue, Zed, Aider, Goose, OpenCode).
+
+### Phase 2C (1 session) — cloud auth wiring
+Wire the boilerplate's sign-up/login pages against `/v1/auth/*`. Without
+this, the cloud product is just a static demo.
+
+### Phase 2D (1 session) — deployment
+Bring up Supabase + Railway + Vercel + DNS. First time mnueron exists at
+`app.mnueron.com` and `api.mnueron.com`.
+
+### Phase 2E (1 session) — Claude Desktop import
+v0.2.5 — reverse-engineer the local cache, write the importer.
+
+### Phase 2F (1 weekend) — platform credibility
+v0.2.6 docs + reference meeting-notes app skeleton.
+
+### Phase 3+ (after early users + revenue)
+Webhooks, plugin marketplace, enterprise IDE plugins, time-decay,
+multi-namespace, audit logs, async embedding worker, server-side redaction.
 
 ---
 

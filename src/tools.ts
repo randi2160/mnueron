@@ -8,10 +8,75 @@
  * characters each — returning 10 of them in full blows up the agent's
  * context window. Agents should `memory_get(id)` after triaging which
  * previews are actually worth reading.
+ *
+ * Plugin hooks (W1):
+ *   - handleToolCall accepts a PluginRegistry. For each save (memory_save +
+ *     memory_import_chat), every processor's `onBeforeSave` runs in order;
+ *     if any returns null, the save is silently dropped (useful for
+ *     blocking redaction).
+ *   - For each recall (memory_recall, memory_list, memory_get), every
+ *     processor's `onAfterRecall` runs in order on each returned memory.
+ *   - Failures in plugin hooks are caught and logged; they don't break
+ *     the user's tool call.
  */
-import type { Memory, Provider } from './store/provider.js';
+import type { Memory, Provider, SaveMemoryInput } from './store/provider.js';
+import type { PluginRegistry } from './plugins/loader.js';
 import { importClaudeExport } from './import/claude.js';
 import { importOpenAIExport } from './import/openai.js';
+
+// Sentinel registry for callers that don't pass one (CLI commands, tests).
+const EMPTY_REGISTRY: PluginRegistry = {
+  processors: [],
+  sources: [],
+  exporters: [],
+  embedders: [],
+  loaded: [],
+};
+
+/**
+ * Run every plugin's onBeforeSave in sequence. Each plugin sees the output
+ * of the prior one. Returning `null` from any plugin cancels the save.
+ */
+async function runBeforeSave(
+  input: SaveMemoryInput,
+  registry: PluginRegistry,
+): Promise<SaveMemoryInput | null> {
+  let current: SaveMemoryInput | null = input;
+  for (const p of registry.processors) {
+    if (!p.onBeforeSave || current === null) continue;
+    try {
+      current = await p.onBeforeSave(current);
+    } catch (e: any) {
+      process.stderr.write(`[mnueron] processor ${p.id} onBeforeSave threw: ${e?.message ?? e}\n`);
+    }
+  }
+  return current;
+}
+
+/**
+ * Run every plugin's onAfterRecall on each memory. Failures are logged but
+ * don't drop the memory from results.
+ */
+async function runAfterRecall(
+  memories: Memory[],
+  registry: PluginRegistry,
+): Promise<Memory[]> {
+  if (registry.processors.length === 0) return memories;
+  const out: Memory[] = [];
+  for (const m of memories) {
+    let curr: Memory = m;
+    for (const p of registry.processors) {
+      if (!p.onAfterRecall) continue;
+      try {
+        curr = await p.onAfterRecall(curr);
+      } catch (e: any) {
+        process.stderr.write(`[mnueron] processor ${p.id} onAfterRecall threw: ${e?.message ?? e}\n`);
+      }
+    }
+    out.push(curr);
+  }
+  return out;
+}
 
 // Max content length included in list/recall responses. ~800 chars is enough
 // for a smart agent to see whether a memory is relevant; if it wants the
@@ -154,15 +219,22 @@ export async function handleToolCall(
   defaultNamespace: string,
   name: string,
   args: Record<string, unknown>,
+  registry: PluginRegistry = EMPTY_REGISTRY,
 ) {
   switch (name) {
     case 'memory_save': {
-      return await provider.save({
+      const initial: SaveMemoryInput = {
         content: String(args.content ?? ''),
         namespace: (args.namespace as string) ?? defaultNamespace,
         tags: (args.tags as string[]) ?? [],
         source: (args.source as string) ?? 'agent',
-      });
+      };
+      const transformed = await runBeforeSave(initial, registry);
+      if (transformed === null) {
+        // A plugin dropped the save (e.g. policy/redaction filter).
+        return { dropped: true, reason: 'a plugin cancelled the save' };
+      }
+      return await provider.save(transformed);
     }
     case 'memory_recall': {
       const k = Math.min(25, Math.max(1, (args.k as number) ?? 5));
@@ -172,22 +244,26 @@ export async function handleToolCall(
         k,
         tags: args.tags as string[] | undefined,
       });
-      return memories.map(toPreview);
+      const processed = await runAfterRecall(memories, registry);
+      return processed.map(toPreview);
     }
     case 'memory_get': {
       const id = String(args.id ?? '');
       if (!id) throw new Error('id is required');
       const mem = await provider.get(id);
       if (!mem) throw new Error(`memory not found: ${id}`);
+      // Run onAfterRecall plugins before slicing — gives plugins a chance to
+      // redact / decorate the full content, then we slice the result.
+      const [processed] = await runAfterRecall([mem], registry);
       // Cap content size to keep responses context-friendly. The agent can
       // page via offset + max_chars if it needs more.
-      const fullLength = mem.content?.length ?? 0;
+      const fullLength = processed.content?.length ?? 0;
       const maxChars = Math.min(100000, Math.max(100, (args.max_chars as number) ?? 8000));
       const offset = Math.max(0, Math.min(fullLength, (args.offset as number) ?? 0));
-      const slice = (mem.content ?? '').slice(offset, offset + maxChars);
+      const slice = (processed.content ?? '').slice(offset, offset + maxChars);
       const truncated = offset + slice.length < fullLength;
       return {
-        ...mem,
+        ...processed,
         content: slice,
         content_full_length: fullLength,
         content_offset: offset,
@@ -205,10 +281,11 @@ export async function handleToolCall(
       }
       const chunks = findThread.call(provider, idOrRef) as Memory[];
       if (chunks.length === 0) return { chunks: [], count: 0 };
+      const processed = await runAfterRecall(chunks, registry);
       return {
-        count: chunks.length,
-        parent_ref: chunks[0].source_ref ?? null,
-        chunks: chunks.map(toPreview),
+        count: processed.length,
+        parent_ref: processed[0].source_ref ?? null,
+        chunks: processed.map(toPreview),
       };
     }
     case 'memory_list': {
@@ -218,7 +295,8 @@ export async function handleToolCall(
         limit,
         before: args.before as number | undefined,
       });
-      return memories.map(toPreview);
+      const processed = await runAfterRecall(memories, registry);
+      return processed.map(toPreview);
     }
     case 'memory_delete': {
       const ok = await provider.delete(String(args.id));
@@ -242,8 +320,17 @@ export async function handleToolCall(
       } else {
         throw new Error(`Unknown format: ${format}`);
       }
-      const result = await provider.bulkSave(items);
-      return { ...result, namespace: ns, format };
+      // Run onBeforeSave plugin hooks against every imported item.
+      // Items dropped by plugins are filtered out and counted separately.
+      let droppedByPlugin = 0;
+      const filtered: SaveMemoryInput[] = [];
+      for (const it of items) {
+        const transformed = await runBeforeSave(it, registry);
+        if (transformed === null) droppedByPlugin++;
+        else filtered.push(transformed);
+      }
+      const result = await provider.bulkSave(filtered);
+      return { ...result, namespace: ns, format, dropped_by_plugin: droppedByPlugin };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

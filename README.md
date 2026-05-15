@@ -1,14 +1,5 @@
-<!-- Side-by-side preview while comparing. Once a winner is chosen, replace
-     both blocks with the GitHub `<picture>` element for theme switching. -->
-
-<p align="center"><sub><em>Light version</em></sub></p>
 <p align="center">
-  <img src="assets/og-image-light.png" alt="mnueron — light" width="640" />
-</p>
-
-<p align="center"><sub><em>Dark version</em></sub></p>
-<p align="center">
-  <img src="assets/promo-large-dark.png" alt="mnueron — dark" width="640" />
+  <img src="assets/promo-large-dark.png" alt="mnueron — memory for every AI" width="640" />
 </p>
 
 <p align="center"><strong>One memory layer. Every LLM. Every dev tool. Every app you build.</strong></p>

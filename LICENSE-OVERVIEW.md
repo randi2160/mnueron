@@ -64,27 +64,24 @@ fully open Apache 2.0 in 2028. Long-term mnueron is as open as anything;
 short-term the commercial moat is protected while we build the hosted
 business.
 
-### Why not just MIT/Apache like Mem0 or Letta?
+### Why this model?
 
-Mem0 and Letta are well-funded with brand and hosted convenience as their
-moat. mnueron is pre-launch and small — a funded competitor could fork
-`server/`, hire a marketing team, and run mnueron-cloud against us with
-our own code. FSL prevents that specific failure mode while keeping
-everything else identical to a fully open project.
+The open-core split lets us be maximally welcoming on the parts of the
+codebase developers actually need to adopt (the SDK, CLI, extension, local
+dashboard) while supporting a hosted commercial offering that funds the
+project's long-term work. Sentry, GitLab, Mattermost, and a number of
+other actively-developed OSS projects use the same shape.
 
-### Why not BSL like HashiCorp?
+### Is FSL "open source"?
 
-FSL is BSL's modern simplification by Sentry. Same effect, less legal
-ambiguity, 2-year (not 4-year) conversion, no per-deployment parameters
-to argue about. Sentry has been running this since 2023; the language is
-stable.
+In the strict OSI definition, no — FSL is **source-available**, which
+means the source is published and you can read, modify, contribute, and
+self-host it, but redistribution for competing commercial use is
+restricted for the first two years. After that, each version automatically
+converts to Apache 2.0, which is OSI-approved open source.
 
-### Will OSI / Debian / Fedora call this "open source"?
-
-No — strictly speaking FSL is source-available, not OSI-approved
-open-source. We don't market `server/` as "open source"; we market it as
-"open core" or "source-available." This is a deliberate choice. The
-client code IS OSI-approved open-source (MIT).
+The client code (`src/`, `dashboard/`, `extension/`, `sdks/`, `examples/`)
+is fully OSI-approved open source under MIT.
 
 ### How do I contribute?
 

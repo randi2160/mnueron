@@ -44,17 +44,17 @@
   "content_scripts": [
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["scrapers/claude.js"],
+      "js": ["scrapers/claude.js", "scrapers/ambient.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["scrapers/chatgpt.js"],
+      "js": ["scrapers/chatgpt.js", "scrapers/ambient.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://gemini.google.com/*"],
-      "js": ["scrapers/gemini.js"],
+      "js": ["scrapers/gemini.js", "scrapers/ambient.js"],
       "run_at": "document_idle"
     }
   ]

@@ -19,6 +19,10 @@ const DEFAULTS = Object.freeze({
   hosted_url: 'https://mnueron.com',
   hosted_token: '',
   auto_capture: false,
+  // Ambient context: search mnueron as the user types and surface relevant
+  // past memories in a small floating pill. Off by default because it
+  // changes the page UX without asking; user enables in options.
+  ambient_context: false,
   namespace_prefix: 'web',     // memories saved as `${prefix}-${site}` namespace
   prefer_hosted: false,        // if true, use hosted_url (with token); else local
 });

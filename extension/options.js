@@ -5,7 +5,7 @@
 const $ = (id) => document.getElementById(id);
 
 const FIELDS = ['local_url', 'hosted_url', 'hosted_token', 'namespace_prefix'];
-const CHECKS = ['auto_capture', 'prefer_hosted'];
+const CHECKS = ['auto_capture', 'prefer_hosted', 'ambient_context'];
 
 // Hard-coded fallbacks shown in the input boxes when settings storage has
 // the field empty. Keep these in sync with DEFAULTS in background.js. Users

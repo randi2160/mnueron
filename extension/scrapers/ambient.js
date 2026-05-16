@@ -96,12 +96,29 @@
     host.id = 'mnueron-ambient-host';
     Object.assign(host.style, {
       position: 'fixed',
-      right: '24px',
-      bottom: '120px',
       zIndex: '2147483647',
       pointerEvents: 'auto',
+      // Initial off-screen placement; positionRelativeToPrompt() snaps it
+      // to the real coords as soon as the prompt input is found.
+      top: '-1000px',
+      left: '-1000px',
     });
     document.documentElement.appendChild(host);
+
+    // Reposition on viewport changes. rAF coalesces frequent scrolls.
+    let scheduled = false;
+    const reposition = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        positionRelativeToPrompt();
+      });
+    };
+    window.addEventListener('scroll', reposition, { passive: true, capture: true });
+    window.addEventListener('resize', reposition, { passive: true });
+    // SPAs swap their layout often — poll position too.
+    setInterval(positionRelativeToPrompt, 800);
 
     shadow = host.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
@@ -336,8 +353,53 @@
             }
           }, 150);
         });
+        positionRelativeToPrompt();
         break;
       }
+    }
+  }
+
+  /**
+   * Anchor the host element 12px above the prompt input, right-aligned to
+   * the prompt's right edge. Falls back to a sane bottom-right if there's
+   * no prompt input found yet. Clamps to viewport so the panel can't slide
+   * off-screen on narrow windows.
+   */
+  function positionRelativeToPrompt() {
+    if (!host) return;
+    const PILL_HEIGHT = 40;       // approximate; gives us room for the pill
+    const MARGIN = 12;
+
+    if (promptEl && document.contains(promptEl)) {
+      const rect = promptEl.getBoundingClientRect();
+      // Compute desired top so the pill sits ABOVE the input. If that would
+      // push it off the top of the viewport, drop it to BELOW the input.
+      let top = rect.top - PILL_HEIGHT - MARGIN;
+      if (top < 8) top = rect.bottom + MARGIN;
+
+      // Right-align the pill to the prompt's right edge. The panel that
+      // expands is 360px wide; make sure it fits within the viewport.
+      const PANEL_WIDTH = 360;
+      const desiredRight = window.innerWidth - rect.right;
+      const minRight = 12;
+      const maxRight = window.innerWidth - PANEL_WIDTH - 12;
+      const right = Math.max(minRight, Math.min(maxRight, desiredRight));
+
+      Object.assign(host.style, {
+        top: `${Math.max(8, top)}px`,
+        right: `${right}px`,
+        left: 'auto',
+        bottom: 'auto',
+      });
+    } else {
+      // Fallback when prompt not yet found — sit bottom-right where the
+      // chat input usually is.
+      Object.assign(host.style, {
+        top: 'auto',
+        left: 'auto',
+        right: '24px',
+        bottom: '120px',
+      });
     }
   }
 
@@ -365,6 +427,11 @@
     if (!q || q === lastQuery) return;
     lastQuery = q;
     try {
+      // background.js's recallMemories() automatically falls back to
+      // settings.ambient_namespace when no explicit namespace is supplied,
+      // so we don't need to pass it from here. Keeps the message payload
+      // small and lets the user change the scope without us having to
+      // re-read settings on every keystroke.
       const res = await sendMessage({ type: 'mnueron:recall', q, k: 5 });
       if (!res?.ok) { hidePill(); return; }
       lastResults = Array.isArray(res.result) ? res.result : [];

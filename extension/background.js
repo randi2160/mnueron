@@ -23,6 +23,9 @@ const DEFAULTS = Object.freeze({
   // past memories in a small floating pill. Off by default because it
   // changes the page UX without asking; user enables in options.
   ambient_context: false,
+  // Optional namespace scope for ambient searches. Empty = search all.
+  // User can scope to a specific namespace (e.g., "web-claude") in options.
+  ambient_namespace: '',
   namespace_prefix: 'web',     // memories saved as `${prefix}-${site}` namespace
   prefer_hosted: false,        // if true, use hosted_url (with token); else local
 });
@@ -91,17 +94,35 @@ async function saveMemory({ content, namespace, tags, source, source_ref, metada
  * Returns the top-k matches. Hosted mode: hits mnueron.com BM25/semantic
  * search. Local mode: hits the local dashboard server's same endpoint.
  *
- * Used by the popup's Recall panel — the user types a query, picks a
- * result, and we ask the active tab's content script to inject the memory
- * content into the prompt input.
+ * Used by the popup's Recall panel and by ambient.js. If namespace is not
+ * supplied explicitly we fall back to settings.ambient_namespace, so the
+ * ambient feature respects the user's scope choice without each caller
+ * having to pass it.
  */
 async function recallMemories({ q, namespace, k = 5 }) {
   if (!q || !q.trim()) return [];
   const params = new URLSearchParams();
   params.set('q', q.trim());
+  if (!namespace) {
+    const s = await getSettings();
+    if (s.ambient_namespace) namespace = s.ambient_namespace;
+  }
   if (namespace) params.set('namespace', namespace);
   params.set('limit', String(k));
   return apiFetch(`/api/memories?${params.toString()}`);
+}
+
+/**
+ * List the user's distinct namespaces. Used by the options page to
+ * populate the "Search scope" dropdown so they can pick from real
+ * existing namespaces instead of guessing names.
+ */
+async function listNamespaces() {
+  try {
+    return await apiFetch('/api/namespaces');
+  } catch {
+    return [];
+  }
 }
 
 // ─── Site detection from URL ───────────────────────────────────────────────
@@ -394,6 +415,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           namespace: msg.namespace,
           k: msg.k ?? 5,
         });
+        sendResponse({ ok: true, result });
+      } else if (msg.type === 'mnueron:list_namespaces') {
+        const result = await listNamespaces();
         sendResponse({ ok: true, result });
       } else if (msg.type === 'mnueron:inject_prompt') {
         // Forward from popup → active tab's content script.

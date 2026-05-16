@@ -6,6 +6,9 @@ const $ = (id) => document.getElementById(id);
 
 const FIELDS = ['local_url', 'hosted_url', 'hosted_token', 'namespace_prefix'];
 const CHECKS = ['auto_capture', 'prefer_hosted', 'ambient_context'];
+// Single-select dropdowns (separate from text fields so we can populate
+// their <option>s before setting the value).
+const SELECTS = ['ambient_namespace'];
 
 // Hard-coded fallbacks shown in the input boxes when settings storage has
 // the field empty. Keep these in sync with DEFAULTS in background.js. Users
@@ -31,12 +34,46 @@ async function load() {
     }
   }
   for (const f of CHECKS) $(f).checked = !!res.settings[f];
+
+  // Load namespace list from the configured backend so the dropdown shows
+  // real choices instead of "type a name". Non-blocking; if the backend is
+  // unreachable we just leave the dropdown at "All namespaces".
+  void loadNamespaceOptions(res.settings.ambient_namespace || '');
+}
+
+async function loadNamespaceOptions(selectedValue) {
+  const sel = $('ambient_namespace');
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'mnueron:list_namespaces' });
+    const list = Array.isArray(r?.result) ? r.result : [];
+    // Keep the leading "All namespaces" option, then append each namespace.
+    while (sel.options.length > 1) sel.remove(1);
+    for (const ns of list) {
+      if (!ns?.name) continue;
+      const opt = document.createElement('option');
+      opt.value = ns.name;
+      opt.textContent = `${ns.name}  (${ns.count ?? 0})`;
+      sel.appendChild(opt);
+    }
+    // If the saved value isn't in the list (deleted namespace, etc.), keep
+    // it as a separate option so the user still sees what they picked.
+    if (selectedValue && !list.find((n) => n?.name === selectedValue)) {
+      const opt = document.createElement('option');
+      opt.value = selectedValue;
+      opt.textContent = `${selectedValue}  (offline)`;
+      sel.appendChild(opt);
+    }
+    sel.value = selectedValue || '';
+  } catch {
+    sel.value = selectedValue || '';
+  }
 }
 
 async function save() {
   const patch = {};
   for (const f of FIELDS) patch[f] = $(f).value.trim();
   for (const f of CHECKS) patch[f] = $(f).checked;
+  for (const f of SELECTS) patch[f] = $(f).value;
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:set_settings', patch });
   if (res?.ok) toast('Saved.', 'ok');
   else toast('Save failed.', 'err');

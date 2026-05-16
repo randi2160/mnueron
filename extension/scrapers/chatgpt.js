@@ -70,9 +70,52 @@
     return { site: 'chatgpt', url: location.href, title: getTitle(), captured_at: Date.now(), messages: [] };
   }
 
+  // ─── Inject text into the prompt input ─────────────────────────────────
+  // ChatGPT's prompt is either a #prompt-textarea or a ProseMirror
+  // contenteditable depending on the deploy. Try in order.
+  function injectIntoPrompt(text) {
+    if (!text) return { ok: false, error: 'no text' };
+    const selectors = [
+      '#prompt-textarea',
+      'div.ProseMirror[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea[data-id="root"]',
+      'textarea',
+      'div[contenteditable="true"]',
+    ];
+    let el = null;
+    for (const sel of selectors) {
+      el = document.querySelector(sel);
+      if (el && (el.offsetParent || el.tagName === 'TEXTAREA')) break;
+      el = null;
+    }
+    if (!el) return { ok: false, error: 'prompt input not found' };
+
+    el.focus();
+    const prefix = (el.tagName === 'TEXTAREA' ? el.value : el.textContent)?.trim() ? '\n\n' : '';
+
+    if (el.tagName === 'TEXTAREA') {
+      el.value = (el.value || '') + prefix + text;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return { ok: true, where: 'textarea' };
+    }
+    try {
+      document.execCommand('insertText', false, prefix + text);
+      return { ok: true, where: 'contenteditable' };
+    } catch {
+      el.textContent = (el.textContent || '') + prefix + text;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return { ok: true, where: 'fallback' };
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === 'mnueron:scrape') {
       sendResponse(scrape());
+      return true;
+    }
+    if (msg?.type === 'mnueron:inject_prompt') {
+      sendResponse(injectIntoPrompt(msg.text || ''));
       return true;
     }
   });

@@ -82,6 +82,24 @@ async function saveMemory({ content, namespace, tags, source, source_ref, metada
   });
 }
 
+/**
+ * Search memories for a free-text query, optionally scoped to a namespace.
+ * Returns the top-k matches. Hosted mode: hits mnueron.com BM25/semantic
+ * search. Local mode: hits the local dashboard server's same endpoint.
+ *
+ * Used by the popup's Recall panel — the user types a query, picks a
+ * result, and we ask the active tab's content script to inject the memory
+ * content into the prompt input.
+ */
+async function recallMemories({ q, namespace, k = 5 }) {
+  if (!q || !q.trim()) return [];
+  const params = new URLSearchParams();
+  params.set('q', q.trim());
+  if (namespace) params.set('namespace', namespace);
+  params.set('limit', String(k));
+  return apiFetch(`/api/memories?${params.toString()}`);
+}
+
 // ─── Site detection from URL ───────────────────────────────────────────────
 function detectSite(url) {
   if (!url) return null;
@@ -366,6 +384,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // for that here — the popup polls status separately.
         await setStopRequested(true);
         sendResponse({ ok: true });
+      } else if (msg.type === 'mnueron:recall') {
+        const result = await recallMemories({
+          q: msg.q,
+          namespace: msg.namespace,
+          k: msg.k ?? 5,
+        });
+        sendResponse({ ok: true, result });
+      } else if (msg.type === 'mnueron:inject_prompt') {
+        // Forward from popup → active tab's content script.
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) { sendResponse({ ok: false, error: 'no active tab' }); return; }
+        try {
+          const r = await chrome.tabs.sendMessage(tab.id, {
+            type: 'mnueron:inject_prompt',
+            text: msg.text || '',
+          });
+          sendResponse(r || { ok: false, error: 'no response from content script' });
+        } catch (e) {
+          sendResponse({ ok: false, error: 'page has no scraper loaded — reload the tab and try again' });
+        }
       } else if (msg.type === 'mnueron:backfill_status') {
         const s = (await chrome.storage.local.get('backfill_progress')).backfill_progress || null;
         sendResponse({ ok: true, status: s });

@@ -154,6 +154,46 @@
     }
   }
 
+  // ─── Inject text into the prompt input ──────────────────────────────────
+  // Claude.ai's prompt is a ProseMirror contenteditable. Selector has shifted
+  // over time, so try a few in order. Returns { ok, where, error }.
+  function injectIntoPrompt(text) {
+    if (!text) return { ok: false, error: 'no text' };
+    const selectors = [
+      'div.ProseMirror[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
+      'textarea',
+    ];
+    let el = null;
+    for (const sel of selectors) {
+      el = document.querySelector(sel);
+      if (el && (el.offsetParent || el.tagName === 'TEXTAREA')) break;
+      el = null;
+    }
+    if (!el) return { ok: false, error: 'prompt input not found' };
+
+    el.focus();
+    const prefix = (el.tagName === 'TEXTAREA' ? el.value : el.textContent)?.trim() ? '\n\n' : '';
+
+    if (el.tagName === 'TEXTAREA') {
+      el.value = (el.value || '') + prefix + text;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return { ok: true, where: 'textarea' };
+    }
+    // ProseMirror / contenteditable. execCommand is deprecated but still the
+    // only reliable way to insert into React-managed editors without
+    // confusing their state.
+    try {
+      document.execCommand('insertText', false, prefix + text);
+      return { ok: true, where: 'contenteditable' };
+    } catch {
+      el.textContent = (el.textContent || '') + prefix + text;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return { ok: true, where: 'fallback' };
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === 'mnueron:scrape') {
       sendResponse(scrape());
@@ -166,6 +206,10 @@
     if (msg?.type === 'mnueron:backfill_get') {
       backfillGet(msg.orgId, msg.uuid).then(sendResponse);
       return true;  // async
+    }
+    if (msg?.type === 'mnueron:inject_prompt') {
+      sendResponse(injectIntoPrompt(msg.text || ''));
+      return true;
     }
   });
 

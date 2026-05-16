@@ -325,6 +325,107 @@ $('backfill-stop-btn').addEventListener('click', async () => {
 let backfillPoll = setInterval(refreshBackfillProgress, 600);
 window.addEventListener('unload', () => clearInterval(backfillPoll));
 
+// ─── Recall: search memories + insert into the page's prompt ─────────────
+//
+// Pattern:
+//   1. User types a query, hits Search (or Enter).
+//   2. We ask background to fetch top-5 from the configured backend.
+//   3. Render each as a card with a preview + "Insert" button.
+//   4. Click Insert → background forwards to active tab's content script,
+//      which finds the prompt input and pastes the memory content.
+//
+// Only shows the section on supported chat sites (otherwise Insert is a
+// no-op).
+async function doRecall() {
+  const q = $('recall-q').value.trim();
+  const resultsEl = $('recall-results');
+  if (!q) {
+    resultsEl.innerHTML = '';
+    return;
+  }
+  $('recall-go').disabled = true;
+  $('recall-go').textContent = '…';
+  resultsEl.innerHTML = '<div style="color:#6c7488; font-size:12px; padding:6px 0;">Searching…</div>';
+
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'mnueron:recall', q, k: 5 });
+    if (!res?.ok) {
+      resultsEl.innerHTML = `<div style="color:#ffa6b0; font-size:12px;">${res?.error || 'recall failed'}</div>`;
+      return;
+    }
+    const items = Array.isArray(res.result) ? res.result : [];
+    if (items.length === 0) {
+      resultsEl.innerHTML = '<div style="color:#6c7488; font-size:12px;">No matches.</div>';
+      return;
+    }
+    resultsEl.innerHTML = '';
+    items.forEach((m, i) => resultsEl.appendChild(renderResult(m, i)));
+  } catch (e) {
+    resultsEl.innerHTML = `<div style="color:#ffa6b0; font-size:12px;">${e.message}</div>`;
+  } finally {
+    $('recall-go').disabled = false;
+    $('recall-go').textContent = 'Search';
+  }
+}
+
+function renderResult(m, i) {
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#11141c; border:1px solid #1f2330; border-radius:8px; padding:8px 10px; margin-top:6px;';
+  const content = (m.content || m.content_preview || '').replace(/\s+/g, ' ').slice(0, 200);
+  const title = (m.metadata?.title || m.namespace || `memory ${i + 1}`).slice(0, 60);
+  const meta = m.namespace ? `${m.namespace}` : '';
+
+  card.innerHTML = `
+    <div style="font-size:12px; font-weight:600; color:#d6dae3; margin-bottom:2px;">${escapeHtml(title)}</div>
+    <div style="font-size:11px; color:#6c7488; margin-bottom:6px;">${escapeHtml(meta)}</div>
+    <div style="font-size:12px; color:#8a92a6; line-height:1.4; margin-bottom:8px;">${escapeHtml(content)}${content.length === 200 ? '…' : ''}</div>
+    <div style="display:flex; gap:6px;">
+      <button class="insert-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;">Insert</button>
+      <button class="open-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;" data-secondary>Open in dashboard</button>
+    </div>
+  `;
+  card.querySelector('.open-btn').classList.add('secondary');
+  card.querySelector('.insert-btn').addEventListener('click', () => insertMemory(m));
+  card.querySelector('.open-btn').addEventListener('click', () => openMemoryInDashboard(m));
+  return card;
+}
+
+function escapeHtml(s) {
+  return (s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function insertMemory(m) {
+  const text = m.content || m.content_preview || '';
+  if (!text) {
+    showToast('memory has no content to insert', 'err');
+    return;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'mnueron:inject_prompt', text });
+  if (res?.ok) {
+    showToast('Inserted into prompt ✓', 'ok');
+    // Auto-close the popup so the user can finish typing — small UX win.
+    setTimeout(() => window.close(), 600);
+  } else {
+    showToast(res?.error || 'inject failed', 'err');
+  }
+}
+
+async function openMemoryInDashboard(m) {
+  const settingsRes = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
+  const s = settingsRes?.settings ?? {};
+  const base = s.prefer_hosted
+    ? (s.hosted_url || 'https://mnueron.com').replace(/\/$/, '')
+    : (s.local_url || 'http://localhost:3122').replace(/\/$/, '');
+  // Mark a hash so the dashboard could deep-link to the memory in the
+  // future. Today the dashboard just lands you on the list.
+  chrome.tabs.create({ url: `${base}/dashboard#memory=${encodeURIComponent(m.id)}` });
+}
+
+$('recall-go').addEventListener('click', doRecall);
+$('recall-q').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doRecall();
+});
+
 // ─── Boot ─────────────────────────────────────────────────────────────────
 renderBackendMode();
 setTodayCount();

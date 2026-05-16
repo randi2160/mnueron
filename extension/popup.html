@@ -190,6 +190,25 @@
   <button class="secondary" id="open-dashboard-alt">Open dashboard</button>
 </section>
 
+<!-- ─── Recall: search memories + insert into current prompt ───────── -->
+<section id="recall-section">
+  <p class="label">Recall</p>
+  <div style="display:flex; gap:6px;">
+    <input
+      type="text"
+      id="recall-q"
+      placeholder="search your memories…"
+      style="flex:1; background:#0a0c10; border:1px solid #232938; border-radius:6px; padding:7px 10px; color:#d6dae3; font:inherit; outline:none;"
+    />
+    <button id="recall-go" style="width:auto; padding:7px 12px;">Search</button>
+  </div>
+  <div id="recall-results" style="margin-top:8px;"></div>
+  <p id="recall-hint" style="margin:6px 0 0; font-size:11px; color:#6c7488;">
+    Searches your mnueron store. Click <strong>Insert</strong> on a match
+    to drop it into the chat prompt.
+  </p>
+</section>
+
 <!-- ─── Backfill (Claude only) ──────────────────────────────────────── -->
 <section id="backfill-section" style="display:none">
   <div class="site"><span class="name">Backfill</span> — import every past Claude chat</div>

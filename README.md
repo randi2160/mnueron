@@ -68,7 +68,7 @@ When you want cross-machine sync or are running this for a team, the hosted plan
 | Embedding into your own SaaS (multi-tenant API) | self-host | ✓ |
 | SSO / SAML, BAAs, SLAs | — | enterprise tier |
 
-Pricing: **$9/mo Personal · $19/mo Pro · $25/user/mo Team · custom Enterprise**. See [PLAN.md](PLAN.md#6-pricing-model) for the full breakdown.
+Pricing: **$9/mo Personal · $25/user/mo Team · custom Enterprise**. Full plan details at [mnueron.com/pricing](https://mnueron.com/pricing).
 
 To flip a machine to hosted mode:
 

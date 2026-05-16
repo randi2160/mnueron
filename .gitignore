@@ -49,3 +49,10 @@ obj/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Internal planning + working docs. These contain strategy, pricing
+# rationale, competitive analysis, and engineering session notes that
+# should NOT be public. Keep your local copies; just don't push them.
+PLAN.md
+DEVELOPMENT.md
+HANDOFF.md

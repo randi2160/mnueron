@@ -92,32 +92,27 @@ On macOS you can also use `brew install node@20`; on Ubuntu/Debian `sudo apt ins
 
 ### Install mnueron
 
-Two paths, pick whichever works for you:
+```bash
+npm install -g mnueron
+mnueron setup
+```
 
-#### A. From source (works today)
+That's it. Published on npm: <https://www.npmjs.com/package/mnueron>.
+
+#### From source (for contributors)
+
+If you want to hack on mnueron itself, install from a local clone:
 
 ```bash
 git clone https://github.com/randi2160/mnueron.git
 cd mnueron
 npm install
 npm run build
-npm link            # registers `mnueron` as a global command on your PATH
+npm link            # makes your local build the global `mnueron` command
 mnueron setup
 ```
 
-The `npm link` step is what makes `mnueron` callable from anywhere. To
-uninstall later, run `npm unlink -g mnueron` from the same directory.
-
-#### B. From npm (coming soon)
-
-Once the package is published, the one-liner will work:
-
-```bash
-npm install -g mnueron
-mnueron setup
-```
-
-Until then, use path A. The CLI behavior is identical either way.
+To switch back to the published version: `npm unlink -g mnueron && npm install -g mnueron`.
 
 ### What `mnueron setup` does
 

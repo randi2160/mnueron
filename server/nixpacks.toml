@@ -1,0 +1,14 @@
+# Nixpacks build config for the mnueron hosted backend.
+#
+# We pin Node 20 and force `npm install` (no lockfile required) so that
+# Railway deploys succeed even when the lockfile isn't checked in. Once
+# `server/package-lock.json` is reliably in the repo, switch back to
+# `npm ci` for deterministic builds.
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm install --no-audit --no-fund"]
+
+[start]
+cmd = "npm start"

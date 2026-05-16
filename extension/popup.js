@@ -336,11 +336,19 @@ window.addEventListener('unload', () => clearInterval(backfillPoll));
 //
 // Only shows the section on supported chat sites (otherwise Insert is a
 // no-op).
+// Memories currently shown in the Recall results. Indexed by id so we can
+// rebuild the "build prompt" output from the selection without re-fetching.
+const recallById = new Map();
+const recallSelected = new Set();
+
 async function doRecall() {
   const q = $('recall-q').value.trim();
   const resultsEl = $('recall-results');
   if (!q) {
     resultsEl.innerHTML = '';
+    recallById.clear();
+    recallSelected.clear();
+    renderRecallFooter();
     return;
   }
   $('recall-go').disabled = true;
@@ -354,17 +362,106 @@ async function doRecall() {
       return;
     }
     const items = Array.isArray(res.result) ? res.result : [];
+    recallById.clear();
+    // Fresh search clears prior selection — IDs from the new result set
+    // are the only valid selections going forward.
+    recallSelected.clear();
+    items.forEach((m) => recallById.set(m.id, m));
+
     if (items.length === 0) {
       resultsEl.innerHTML = '<div style="color:#6c7488; font-size:12px;">No matches.</div>';
+      renderRecallFooter();
       return;
     }
     resultsEl.innerHTML = '';
     items.forEach((m, i) => resultsEl.appendChild(renderResult(m, i)));
+    renderRecallFooter();
   } catch (e) {
     resultsEl.innerHTML = `<div style="color:#ffa6b0; font-size:12px;">${e.message}</div>`;
   } finally {
     $('recall-go').disabled = false;
     $('recall-go').textContent = 'Search';
+  }
+}
+
+// Sticky-ish footer under the results. Hidden when nothing is selected.
+function renderRecallFooter() {
+  let footer = document.getElementById('recall-footer');
+  if (!footer) {
+    footer = document.createElement('div');
+    footer.id = 'recall-footer';
+    footer.style.cssText = 'margin-top:8px; padding-top:8px; border-top:1px solid #161a26; display:none;';
+    $('recall-results').parentElement.appendChild(footer);
+  }
+  const n = recallSelected.size;
+  if (n === 0) {
+    footer.style.display = 'none';
+    footer.innerHTML = '';
+    return;
+  }
+  footer.style.display = 'block';
+  footer.innerHTML = `
+    <div style="display:flex; gap:6px;">
+      <button id="recall-copy" style="flex:1; padding:7px 12px; font-size:12px;">
+        Copy ${n} as prompt
+      </button>
+      <button id="recall-clear" class="secondary" style="width:auto; padding:7px 12px; font-size:12px; margin-top:0;">
+        Clear
+      </button>
+    </div>
+    <p style="margin:6px 0 0; font-size:11px; color:#6c7488;">
+      Generates a markdown block you can paste into Cowork / ChatGPT / anywhere.
+    </p>
+  `;
+  document.getElementById('recall-copy').addEventListener('click', copySelectedAsPrompt);
+  document.getElementById('recall-clear').addEventListener('click', () => {
+    recallSelected.clear();
+    // Re-render cards to clear checkboxes
+    const resultsEl = $('recall-results');
+    resultsEl.innerHTML = '';
+    [...recallById.values()].forEach((m, i) => resultsEl.appendChild(renderResult(m, i)));
+    renderRecallFooter();
+  });
+}
+
+async function copySelectedAsPrompt() {
+  const selected = [...recallSelected].map((id) => recallById.get(id)).filter(Boolean);
+  if (selected.length === 0) return;
+
+  const blocks = selected.map((m, i) => {
+    const title =
+      (m.metadata && m.metadata.title) ||
+      (m.content || m.content_preview || 'memory').replace(/\s+/g, ' ').slice(0, 80);
+    const date = new Date(m.created_at || Date.now()).toISOString().slice(0, 10);
+    const body = (m.content || m.content_preview || '').trim();
+    return `<memory ${i + 1} namespace="${m.namespace}" date="${date}">\ntitle: ${title}\n\n${body}\n</memory ${i + 1}>`;
+  });
+
+  const text = [
+    "Here is context from my mnueron memory store. Absorb it, then I'll ask my real question.",
+    '',
+    blocks.join('\n\n'),
+    '',
+    "(End of context. Acknowledge briefly and I'll send my actual question.)",
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`Copied ${selected.length} memor${selected.length === 1 ? 'y' : 'ies'} → paste anywhere`, 'ok');
+  } catch (e) {
+    // Fallback for non-HTTPS contexts where clipboard API is denied.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      showToast(`Copied ${selected.length} memor${selected.length === 1 ? 'y' : 'ies'}`, 'ok');
+    } catch {
+      showToast('Copy failed — clipboard blocked', 'err');
+    } finally {
+      document.body.removeChild(ta);
+    }
   }
 }
 
@@ -374,19 +471,31 @@ function renderResult(m, i) {
   const content = (m.content || m.content_preview || '').replace(/\s+/g, ' ').slice(0, 200);
   const title = (m.metadata?.title || m.namespace || `memory ${i + 1}`).slice(0, 60);
   const meta = m.namespace ? `${m.namespace}` : '';
+  const checked = recallSelected.has(m.id) ? 'checked' : '';
 
   card.innerHTML = `
-    <div style="font-size:12px; font-weight:600; color:#d6dae3; margin-bottom:2px;">${escapeHtml(title)}</div>
-    <div style="font-size:11px; color:#6c7488; margin-bottom:6px;">${escapeHtml(meta)}</div>
-    <div style="font-size:12px; color:#8a92a6; line-height:1.4; margin-bottom:8px;">${escapeHtml(content)}${content.length === 200 ? '…' : ''}</div>
-    <div style="display:flex; gap:6px;">
-      <button class="insert-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;">Insert</button>
-      <button class="open-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;" data-secondary>Open in dashboard</button>
+    <div style="display:flex; gap:8px; align-items:flex-start;">
+      <input type="checkbox" class="select-cb" data-id="${escapeHtml(m.id)}" ${checked}
+        style="margin-top:2px; accent-color:#5b2cff;" />
+      <div style="min-width:0; flex:1;">
+        <div style="font-size:12px; font-weight:600; color:#d6dae3; margin-bottom:2px;">${escapeHtml(title)}</div>
+        <div style="font-size:11px; color:#6c7488; margin-bottom:6px;">${escapeHtml(meta)}</div>
+        <div style="font-size:12px; color:#8a92a6; line-height:1.4; margin-bottom:8px;">${escapeHtml(content)}${content.length === 200 ? '…' : ''}</div>
+        <div style="display:flex; gap:6px;">
+          <button class="insert-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;">Insert</button>
+          <button class="open-btn" data-idx="${i}" style="width:auto; padding:5px 10px; font-size:11px;">Open in dashboard</button>
+        </div>
+      </div>
     </div>
   `;
   card.querySelector('.open-btn').classList.add('secondary');
   card.querySelector('.insert-btn').addEventListener('click', () => insertMemory(m));
   card.querySelector('.open-btn').addEventListener('click', () => openMemoryInDashboard(m));
+  card.querySelector('.select-cb').addEventListener('change', (ev) => {
+    if (ev.target.checked) recallSelected.add(m.id);
+    else recallSelected.delete(m.id);
+    renderRecallFooter();
+  });
   return card;
 }
 

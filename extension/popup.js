@@ -161,9 +161,16 @@ $('open-options').addEventListener('click', e => {
 async function openDashboardTab() {
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
   const s = res?.settings ?? {};
-  const url = s.prefer_hosted && s.hosted_url
-    ? (s.hosted_url.replace(/\/$/, '') + '/dashboard')
-    : (s.local_url || 'http://localhost:3122');
+  // Mirror background.js's backendBase() resolution exactly: when Hosted is
+  // on, ALWAYS land at the cloud /dashboard (default mnueron.com), even if
+  // hosted_url is somehow blank. Local mode opens the local dashboard root.
+  let url;
+  if (s.prefer_hosted) {
+    const base = (s.hosted_url || 'https://mnueron.com').replace(/\/$/, '');
+    url = `${base}/dashboard`;
+  } else {
+    url = (s.local_url || 'http://localhost:3122').replace(/\/$/, '');
+  }
   chrome.tabs.create({ url });
 }
 

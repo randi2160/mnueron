@@ -14,11 +14,13 @@
 
 const DEFAULTS = Object.freeze({
   local_url: 'http://localhost:3122',
-  hosted_url: '',
+  // Default the hosted URL to the canonical mnueron.com so users don't have
+  // to type it. They can still override in the options page if self-hosting.
+  hosted_url: 'https://mnueron.com',
   hosted_token: '',
   auto_capture: false,
   namespace_prefix: 'web',     // memories saved as `${prefix}-${site}` namespace
-  prefer_hosted: false,        // if true and hosted_url set, use hosted; else local
+  prefer_hosted: false,        // if true, use hosted_url (with token); else local
 });
 
 async function getSettings() {
@@ -31,10 +33,24 @@ async function setSettings(patch) {
 }
 
 // ─── HTTP client ───────────────────────────────────────────────────────────
+/**
+ * Resolve the current backend URL + bearer token from settings.
+ *
+ * In Hosted mode we ALWAYS use the canonical mnueron.com URL even if the
+ * user's settings somehow have hosted_url cleared. That way the "Hosted"
+ * toggle never silently falls back to localhost — a class of bug we hit
+ * when the popup said "Hosted" but requests still went to 127.0.0.1.
+ */
 async function backendBase() {
   const s = await getSettings();
-  if (s.prefer_hosted && s.hosted_url) return { url: s.hosted_url, token: s.hosted_token };
-  return { url: s.local_url, token: '' };
+  if (s.prefer_hosted) {
+    const url = (s.hosted_url || 'https://mnueron.com').replace(/\/$/, '');
+    return { url, token: s.hosted_token || '' };
+  }
+  return {
+    url: (s.local_url || 'http://localhost:3122').replace(/\/$/, ''),
+    token: '',
+  };
 }
 
 async function apiFetch(path, opts = {}) {

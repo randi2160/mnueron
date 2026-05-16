@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "buildAptPackages": [],
+  "steps": {
+    "install": {
+      "commands": [
+        "npm install --omit=optional --no-audit --no-fund"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "npm start"
+  }
+}

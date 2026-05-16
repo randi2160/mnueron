@@ -149,6 +149,22 @@
   </fieldset>
 
   <fieldset>
+    <legend>Re-import backfilled chats</legend>
+    <p style="margin: 0 0 10px; color: #8a92a6; font-size: 12px;">
+      Clears the &quot;already imported&quot; cache so the next <strong>Backfill</strong>
+      pulls every Claude chat through the latest scraper. Useful when the
+      scraper has been improved (e.g., extra assistant content now extractable).
+      The hosted backend dedupes by <code>source_ref</code>, so re-importing
+      <em>updates</em> existing memories rather than duplicating them.
+    </p>
+    <div class="actions" style="margin-top: 0;">
+      <button id="reset-backfill" class="secondary" style="border-color:#5b2cff;color:#cab9ff;">
+        Clear backfill cache
+      </button>
+    </div>
+  </fieldset>
+
+  <fieldset>
     <legend>Migrate local → hosted</legend>
     <p style="margin: 0 0 10px; color: #8a92a6; font-size: 12px;">
       Copy every memory in your local mnueron store up to the hosted account

@@ -8,20 +8,32 @@
 (() => {
   const TAG = '[mnueron/chatgpt]';
 
+  // Each strategy bails (returns null) if it finds messages of only ONE
+  // role — a one-sided extract is almost certainly an outdated selector
+  // and silently truncates the conversation. Let the next strategy try.
+
   function strat_authorRole() {
     const nodes = document.querySelectorAll('[data-message-author-role]');
     if (!nodes.length) return null;
-    return [...nodes].map(n => {
+    const out = [...nodes].map(n => {
       const role = n.getAttribute('data-message-author-role') || 'unknown';
       const inner = n.querySelector('[data-message-text-content], .markdown, .text-message') || n;
       return { role, content: extractText(inner) };
     }).filter(m => m.content);
+    if (out.length === 0) return null;
+    const haveUser = out.some(m => m.role === 'user');
+    const haveAsst = out.some(m => m.role === 'assistant');
+    if (!haveUser || !haveAsst) {
+      console.warn(`${TAG} strat_authorRole one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
+      return null;
+    }
+    return out;
   }
 
   function strat_markdown() {
     const nodes = document.querySelectorAll('main .markdown, main [data-message-text-content]');
     if (!nodes.length) return null;
-    return [...nodes].map(el => {
+    const out = [...nodes].map(el => {
       // Walk up to find the role attribute, if any
       let role = 'unknown';
       let cur = el;
@@ -32,6 +44,37 @@
       }
       return { role, content: extractText(el) };
     }).filter(m => m.content);
+    if (out.length === 0) return null;
+    const haveUser = out.some(m => m.role === 'user');
+    const haveAsst = out.some(m => m.role === 'assistant');
+    if (!haveUser || !haveAsst) {
+      console.warn(`${TAG} strat_markdown one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
+      return null;
+    }
+    return out;
+  }
+
+  // Last-resort fallback: walk every <article> in main. Each article in
+  // chatgpt.com is typically one message; we infer role by structural cues.
+  function strat_articleWalk() {
+    const articles = document.querySelectorAll('main article');
+    if (!articles.length) return null;
+    const out = [];
+    for (const art of articles) {
+      // Role detection: prefer attributes, fall back to class hints.
+      const explicit = art.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role');
+      let role = explicit || (() => {
+        const cls = (art.className || '').toLowerCase();
+        if (cls.includes('user'))   return 'user';
+        if (cls.includes('assist') || cls.includes('model') || cls.includes('chatgpt')) return 'assistant';
+        return 'unknown';
+      })();
+      const inner = art.querySelector('.markdown, [data-message-text-content], .text-message') || art;
+      const content = extractText(inner);
+      if (content) out.push({ role, content });
+    }
+    if (out.length === 0) return null;
+    return out;
   }
 
   function extractText(el) {
@@ -49,7 +92,11 @@
   }
 
   function scrape() {
-    for (const [name, fn] of [['authorRole', strat_authorRole], ['markdown', strat_markdown]]) {
+    for (const [name, fn] of [
+      ['authorRole', strat_authorRole],
+      ['markdown', strat_markdown],
+      ['articleWalk', strat_articleWalk],
+    ]) {
       try {
         const out = fn();
         if (out && out.length > 0) {

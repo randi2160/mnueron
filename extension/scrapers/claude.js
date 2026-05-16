@@ -12,22 +12,51 @@
   const TAG = '[mnueron/claude]';
 
   // ─── Strategies, ordered by specificity ──────────────────────────────────
+  //
+  // claude.ai's DOM markers rotate every few months. Each strategy tries a
+  // wider net than the last. If a strategy finds USER messages but no
+  // ASSISTANT messages (or vice versa), we explicitly fall through to the
+  // next strategy — a one-sided result is almost certainly wrong.
+
   function strat_testid() {
-    const nodes = document.querySelectorAll('[data-testid="user-message"], [data-testid="assistant-message"]');
-    if (!nodes.length) return null;
-    return [...nodes].map(n => ({
-      role: n.getAttribute('data-testid') === 'user-message' ? 'user' : 'assistant',
-      content: extractText(n),
-    })).filter(m => m.content);
+    // Cover every testid variant we've seen for both sides.
+    const userNodes = document.querySelectorAll([
+      '[data-testid="user-message"]',
+      '[data-testid="human-message"]',
+    ].join(', '));
+    const asstNodes = document.querySelectorAll([
+      '[data-testid="assistant-message"]',
+      '[data-testid="claude-response"]',
+      '[data-testid="claude-message"]',
+      '[data-testid="model-response"]',
+      '[data-testid="ai-message"]',
+    ].join(', '));
+    if (userNodes.length === 0 && asstNodes.length === 0) return null;
+    // One-sided result → likely outdated selector. Bail and let the next
+    // strategy try a broader sweep.
+    if (userNodes.length === 0 || asstNodes.length === 0) {
+      console.warn(`${TAG} strat_testid one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
+      return null;
+    }
+    const all = [
+      ...[...userNodes].map(n => ({ el: n, role: 'user' })),
+      ...[...asstNodes].map(n => ({ el: n, role: 'assistant' })),
+    ].sort((a, b) => domOrder(a.el, b.el));
+    return all.map(({ el, role }) => ({ role, content: extractText(el) })).filter(m => m.content);
   }
 
   function strat_fontClass() {
-    // Newer DOM uses `font-user-message` / `font-claude-message`
-    const userSel = 'div[class*="font-user-message"], div.font-user-message';
-    const asstSel = 'div[class*="font-claude-message"], div.font-claude-message, div[class*="font-claude-response"]';
+    // Newer DOM uses `font-user-message` / `font-claude-message`.
+    // Also catches `font-claude-response` and any future `font-claude-*`.
+    const userSel = 'div[class*="font-user-message"]';
+    const asstSel = 'div[class*="font-claude-"]';
     const userNodes = [...document.querySelectorAll(userSel)];
     const asstNodes = [...document.querySelectorAll(asstSel)];
     if (!userNodes.length && !asstNodes.length) return null;
+    if (userNodes.length === 0 || asstNodes.length === 0) {
+      console.warn(`${TAG} strat_fontClass one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
+      return null;
+    }
     const combined = [
       ...userNodes.map(n => ({ el: n, role: 'user' })),
       ...asstNodes.map(n => ({ el: n, role: 'assistant' })),

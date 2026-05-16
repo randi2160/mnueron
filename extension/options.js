@@ -201,7 +201,20 @@ async function migrate() {
   }
 }
 
+async function resetBackfill() {
+  if (!confirm("Clear the 'already imported' cache? Next Backfill run will re-process every Claude chat through the latest scraper.")) {
+    return;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'mnueron:backfill_reset' });
+  if (res?.ok) {
+    toast('Backfill cache cleared — open the popup and click Backfill to re-pull.', 'ok');
+  } else {
+    toast('Clear failed.', 'err');
+  }
+}
+
 $('save').addEventListener('click', save);
 $('test').addEventListener('click', testConnection);
 $('migrate').addEventListener('click', migrate);
+$('reset-backfill').addEventListener('click', resetBackfill);
 load();

@@ -156,6 +156,11 @@ function renderTranscript(chat) {
 }
 
 // Render a Claude API conversation object (different shape than the DOM scraper output).
+//
+// IMPORTANT: when an assistant message contributes no extractable text we
+// EMIT A PLACEHOLDER rather than silently skip it. Silent skips mean the
+// stored memory looks like a one-sided user soliloquy, which is what the
+// May 2026 capture-only-user-messages bug looked like.
 function renderClaudeApiConv(conv) {
   const parts = [];
   if (conv.name) parts.push(`# ${conv.name}`);
@@ -168,21 +173,94 @@ function renderClaudeApiConv(conv) {
       m.sender === 'human'     ? 'User'   :
       (m.sender || 'Unknown');
     const text = extractApiMessageText(m);
-    if (!text.trim()) continue;
+    if (!text.trim()) {
+      // Visible placeholder so missing extraction can't go unnoticed.
+      console.warn(
+        `[mnueron/backfill] message ${m.uuid || ''} (${who}) extracted no text. Keys present:`,
+        Object.keys(m || {}),
+      );
+      parts.push(`**${who}:** _(mnueron could not extract text from this message — please open an issue at github.com/randi2160/mnueron with the chat UUID ${m.uuid || 'unknown'})_`);
+      parts.push('');
+      continue;
+    }
     parts.push(`**${who}:** ${text}`);
     parts.push('');
   }
   return parts.join('\n').trim();
 }
 
+/**
+ * Pull readable text out of a Claude API message regardless of which
+ * schema variant it's using. Claude's API has rotated through at least
+ * four shapes since launch; we try each in turn:
+ *
+ *   1. msg.text                       — legacy plain string
+ *   2. msg.content as array of blocks — current default. Each block can be:
+ *        { type: "text",        text: "..." }
+ *        { type: "thinking",    thinking: "..." }
+ *        { type: "tool_use",    name, input }
+ *        { type: "tool_result", content }
+ *   3. msg.parts                      — alt field name seen in some exports
+ *   4. msg.content as plain string    — older single-string content
+ *
+ * Returns "" if nothing extractable. The caller logs + placeholders that
+ * case so we never silently drop a message.
+ */
 function extractApiMessageText(msg) {
-  if (typeof msg.text === 'string' && msg.text) return msg.text;
+  if (!msg || typeof msg !== 'object') return '';
+
+  // 1. top-level text string
+  if (typeof msg.text === 'string' && msg.text.trim()) return msg.text;
+
+  // 2. content array of blocks
   if (Array.isArray(msg.content)) {
-    return msg.content
-      .map(p => (typeof p === 'string') ? p : (p?.text || ''))
+    const out = [];
+    for (const p of msg.content) {
+      if (p == null) continue;
+      if (typeof p === 'string') { out.push(p); continue; }
+      // Plain text block — preferred
+      if (typeof p.text === 'string' && p.text) { out.push(p.text); continue; }
+      // Extended thinking block — keep it, marked so user knows what it was
+      if (typeof p.thinking === 'string' && p.thinking) {
+        out.push(`[thinking] ${p.thinking}`);
+        continue;
+      }
+      // Tool invocation — preserve so the conversation makes sense in context
+      if (p.type === 'tool_use' && p.name) {
+        const args = typeof p.input === 'object'
+          ? JSON.stringify(p.input).slice(0, 500)
+          : String(p.input ?? '');
+        out.push(`[tool_use: ${p.name}] ${args}`);
+        continue;
+      }
+      if (p.type === 'tool_result') {
+        const body = typeof p.content === 'string'
+          ? p.content
+          : (Array.isArray(p.content)
+              ? p.content.map(x => x?.text || '').filter(Boolean).join('\n')
+              : JSON.stringify(p.content ?? ''));
+        if (body) out.push(`[tool_result] ${body.slice(0, 1000)}`);
+        continue;
+      }
+      // Unknown block type — try the most-common text field names anyway
+      const fallback = p.text || p.content || p.value;
+      if (typeof fallback === 'string' && fallback) out.push(fallback);
+    }
+    if (out.length) return out.join('\n');
+  }
+
+  // 3. legacy `parts` field
+  if (Array.isArray(msg.parts)) {
+    const out = msg.parts
+      .map(p => (typeof p === 'string') ? p : (p?.text || p?.content || ''))
       .filter(Boolean)
       .join('\n');
+    if (out) return out;
   }
+
+  // 4. content as a single string (oldest shape, still seen in some exports)
+  if (typeof msg.content === 'string' && msg.content.trim()) return msg.content;
+
   return '';
 }
 
@@ -436,7 +514,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const s = (await chrome.storage.local.get('backfill_progress')).backfill_progress || null;
         sendResponse({ ok: true, status: s });
       } else if (msg.type === 'mnueron:backfill_reset') {
-        await chrome.storage.local.remove(['imported_chat_uuids', 'backfill_progress']);
+        // Clears the imported-uuids cache so the next "Backfill" runs from
+        // scratch. Useful when the scraper or extractor has been improved
+        // and you want to re-pull older conversations through the new code.
+        // Existing memories aren't deleted — but the server side is
+        // idempotent on source_ref, so the re-import upserts rather than
+        // duplicating.
+        await chrome.storage.local.remove(['imported_chat_uuids', 'backfill_progress', 'backfill_stop_requested']);
         sendResponse({ ok: true });
       } else if (msg.type === 'mnueron:auto_capture_event') {
         // Content script tells us auto-capture should fire (e.g. user idle).

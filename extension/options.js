@@ -7,11 +7,28 @@ const $ = (id) => document.getElementById(id);
 const FIELDS = ['local_url', 'hosted_url', 'hosted_token', 'namespace_prefix'];
 const CHECKS = ['auto_capture', 'prefer_hosted'];
 
+// Hard-coded fallbacks shown in the input boxes when settings storage has
+// the field empty. Keep these in sync with DEFAULTS in background.js. Users
+// can override either field; we just don't want them staring at a blank box
+// when there's an obvious right answer.
+const VISIBLE_FALLBACK = {
+  local_url:        'http://localhost:3122',
+  hosted_url:       'https://mnueron.com',
+  namespace_prefix: 'web',
+};
+
 async function load() {
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
   if (!res?.ok) return;
   for (const f of FIELDS) {
-    if (res.settings[f] != null) $(f).value = res.settings[f];
+    const v = res.settings[f];
+    if (v != null && v !== '') {
+      $(f).value = v;
+    } else if (VISIBLE_FALLBACK[f]) {
+      // Pre-fill so the user sees the URL we'd actually use, not blank.
+      // Saving without edits will persist this default into storage.
+      $(f).value = VISIBLE_FALLBACK[f];
+    }
   }
   for (const f of CHECKS) $(f).checked = !!res.settings[f];
 }

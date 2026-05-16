@@ -7,7 +7,7 @@
  *   mnueron search <query>        — quick search from terminal
  *   mnueron namespaces            — list namespaces
  */
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ async function main() {
     case 'rechunk':      return cmdRechunk(rest);
     case 'migrate-to-hosted': return cmdMigrateToHosted(rest);
     case 'plugin':       return cmdPlugin(rest);
+    case 'primer':       return cmdPrimer(rest);
     case 'help':
     case '--help':
     case '-h':
@@ -83,6 +84,11 @@ Commands:
        disable <name>               Remove from enabledPlugins list.
        add <name>                   Alias for enable; also reminds about npm install.
        remove <name>                Alias for disable.
+  mnueron primer                  Output a markdown primer for CLAUDE.md / .cursorrules.
+       [--ns <name>]                Only summarize one namespace (default: all).
+       [--recent <n>]               Sample n most-recent memory titles (default: 12).
+       [--out <file>]               Write to file instead of stdout.
+       Example: mnueron primer > CLAUDE.md
 
 Environment:
   MNUERON_DB_PATH    Local SQLite location (default: ~/.mnueron/memories.db)
@@ -694,6 +700,156 @@ async function cmdRebuildEmbeddings(args: string[]) {
     `${result.skipped} skipped, ${result.errors} errors.\n`,
   );
   await provider.close();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// `mnueron primer` — print a markdown context primer for CLAUDE.md /
+//                   .cursorrules / .windsurfrules / etc.
+//
+// Usage:
+//   mnueron primer                       → write to stdout
+//   mnueron primer > CLAUDE.md           → redirect to project root
+//   mnueron primer --out CLAUDE.md       → same, no shell redirect
+//   mnueron primer --ns work --recent 20 → scope + sample size
+//
+// Why this exists:
+//   MCP-aware tools (Claude Desktop, Cursor, Claude Code, Windsurf, Cline)
+//   ALREADY see mnueron's tools because of `mnueron setup`. The problem is
+//   the AI doesn't always KNOW to call memory_recall. Dropping this primer
+//   in a project root gives the AI an explicit invite + a sketch of what's
+//   in your store, so it pulls context proactively.
+// ─────────────────────────────────────────────────────────────────────────
+async function cmdPrimer(args: string[]) {
+  let ns: string | undefined;
+  let recent = 12;
+  let outFile: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+    else if (args[i] === '--recent' && args[i + 1]) {
+      const n = parseInt(args[++i], 10);
+      if (Number.isFinite(n) && n > 0) recent = Math.min(n, 50);
+    } else if (args[i] === '--out' && args[i + 1]) {
+      outFile = args[++i];
+    }
+  }
+
+  const provider = makeProvider(loadConfig());
+  try {
+    const allNs = await provider.namespaces();
+    const filteredNs = ns ? allNs.filter((n) => n.name === ns) : allNs;
+    const totalCount = filteredNs.reduce((s, n) => s + n.count, 0);
+    const recentList = await provider.list({ namespace: ns, limit: recent });
+
+    const primer = renderPrimer({
+      namespaces: filteredNs,
+      totalCount,
+      recent: recentList,
+      scope: ns,
+    });
+
+    if (outFile) {
+      await writeFile(outFile, primer, 'utf8');
+      // stderr so it doesn't pollute redirected output.
+      process.stderr.write(`Wrote primer to ${outFile}\n`);
+    } else {
+      process.stdout.write(primer);
+    }
+  } finally {
+    await provider.close();
+  }
+}
+
+function renderPrimer(input: {
+  namespaces: Array<{ name: string; count: number; last_updated: number }>;
+  totalCount: number;
+  recent: Array<{ id: string; namespace: string; content: string; created_at: number; metadata?: any }>;
+  scope?: string;
+}): string {
+  const { namespaces, totalCount, recent, scope } = input;
+  const lines: string[] = [];
+
+  lines.push('# Project context — mnueron memory');
+  lines.push('');
+  lines.push(
+    'You have access to **mnueron** memory tools via the Model Context Protocol. ' +
+    'Use them PROACTIVELY — do not wait for the user to ask explicitly:',
+  );
+  lines.push('');
+  lines.push(
+    '- **`memory_recall`** — search the user’s memory store before answering any ' +
+    'question that references past context, prior decisions, project conventions, ' +
+    'or specific user preferences. Call it FIRST when the user uses vague references ' +
+    '("the auth approach", "that bug we hit", "what did we decide about X").',
+  );
+  lines.push(
+    '- **`memory_save`** — store anything worth remembering: decisions, preferences, ' +
+    'finicky API details, project conventions, user-specific facts. Don’t over-save ' +
+    '— prefer specific, durable facts over conversational chatter.',
+  );
+  lines.push(
+    '- **`memory_list`** — browse by namespace when the user asks ' +
+    '"what did we do last week?" or "summarize my recent context".',
+  );
+  lines.push(
+    '- **`memory_get_thread`** — pull all chunks of a multi-turn conversation by ' +
+    'its `parent_ref` when the user references one.',
+  );
+  lines.push('');
+  lines.push(
+    '**Heuristic:** if the user’s message would be easier to answer with prior ' +
+    'context AND you have access to a memory layer, call recall first. The latency ' +
+    'cost is small; the quality gain is large.',
+  );
+  lines.push('');
+
+  // ── Store overview ──
+  const scopeLabel = scope ? ` (scoped to \`${scope}\`)` : '';
+  lines.push(`## Memory store overview${scopeLabel}`);
+  lines.push('');
+  lines.push(`- **${totalCount}** memories across **${namespaces.length}** namespace${namespaces.length === 1 ? '' : 's'}.`);
+  lines.push('');
+  if (namespaces.length > 0) {
+    lines.push('| Namespace | Memories | Last updated |');
+    lines.push('| --- | ---: | --- |');
+    for (const n of namespaces.slice(0, 20)) {
+      const date = n.last_updated ? new Date(n.last_updated).toISOString().slice(0, 10) : '—';
+      lines.push(`| \`${n.name}\` | ${n.count} | ${date} |`);
+    }
+    if (namespaces.length > 20) {
+      lines.push(`| … and ${namespaces.length - 20} more | | |`);
+    }
+    lines.push('');
+  }
+
+  // ── Recent anchors ──
+  if (recent.length > 0) {
+    lines.push('## Recent memory anchors');
+    lines.push('');
+    lines.push(
+      'A small sample of what’s in the store — useful as a sanity check that ' +
+      '`memory_recall` is hitting the right slice when you call it.',
+    );
+    lines.push('');
+    for (const m of recent.slice(0, 15)) {
+      const title =
+        (m.metadata && typeof m.metadata === 'object' && (m.metadata as any).title) ||
+        m.content.replace(/\s+/g, ' ').slice(0, 90) ||
+        '(empty)';
+      const date = new Date(m.created_at).toISOString().slice(0, 10);
+      lines.push(`- ${date} · \`${m.namespace}\` · ${title}${title.length === 90 ? '…' : ''}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    '_Generated by `mnueron primer`. Re-run when your memory store changes ' +
+    'substantially. Safe to check this file into git — it contains no secrets._',
+  );
+  lines.push('');
+
+  return lines.join('\n');
 }
 
 main().catch(e => {

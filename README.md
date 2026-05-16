@@ -76,12 +76,50 @@ To flip a machine to hosted mode:
 mnueron setup --hosted https://api.your-mnueron.com --token mnu_xxx
 ```
 
-## Install in one command
+## Install
+
+### Prerequisites
+
+You need **Node.js 20 or newer** and **npm 10 or newer**. Check what you have:
+
+```bash
+node --version    # need v20.x or higher
+npm --version     # need 10.x or higher
+```
+
+Don't have Node? Install from **<https://nodejs.org/en/download>** (pick LTS).
+On macOS you can also use `brew install node@20`; on Ubuntu/Debian `sudo apt install nodejs`.
+
+### Install mnueron
+
+Two paths, pick whichever works for you:
+
+#### A. From source (works today)
+
+```bash
+git clone https://github.com/randi2160/mnueron.git
+cd mnueron
+npm install
+npm run build
+npm link            # registers `mnueron` as a global command on your PATH
+mnueron setup
+```
+
+The `npm link` step is what makes `mnueron` callable from anywhere. To
+uninstall later, run `npm unlink -g mnueron` from the same directory.
+
+#### B. From npm (coming soon)
+
+Once the package is published, the one-liner will work:
 
 ```bash
 npm install -g mnueron
 mnueron setup
 ```
+
+Until then, use path A. The CLI behavior is identical either way.
+
+### What `mnueron setup` does
 
 The setup wizard detects every AI dev tool you have installed, configures
 each one, and reports back. Restart your tools and your AI remembers.

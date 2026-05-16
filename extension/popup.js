@@ -1,15 +1,23 @@
 /**
  * mnueron popup.
  *
- * On open we:
- *   - check whether the active tab is a supported chat site
- *   - ping the backend
+ * On open:
+ *   - detect supported chat site in active tab
+ *   - render current backend mode (Local/Hosted) + connection state
  *   - report today's capture count and auto-capture toggle
+ *   - show backfill progress / Stop button if a run is in flight
  *
- * Click "Capture chat" → ask background to capture from the active tab.
+ * Click handlers:
+ *   - Capture chat → asks background to scrape active tab and save
+ *   - Local/Hosted toggle → updates `prefer_hosted` setting + re-checks ping
+ *   - Sign in to hosted → opens mnueron.com/account-settings/tokens
+ *   - Backfill all history → starts (or resumes) the claude.ai backfill
+ *   - Stop → asks background to pause cleanly between iterations
  */
 
 const $ = (id) => document.getElementById(id);
+
+const HOSTED_TOKENS_URL = 'https://mnueron.com/account-settings/tokens';
 
 const SUPPORTED = {
   'claude.ai':           'Claude',
@@ -30,27 +38,72 @@ function siteFromUrl(url) {
   } catch { return null; }
 }
 
+// ─── Backend mode toggle ──────────────────────────────────────────────────
+async function renderBackendMode() {
+  const res = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
+  const s = res?.settings ?? {};
+  const isHosted = !!s.prefer_hosted;
+
+  $('mode-local').classList.toggle('active', !isHosted);
+  $('mode-hosted').classList.toggle('active', isHosted);
+
+  if (isHosted) {
+    const url = (s.hosted_url || 'https://mnueron.com').replace(/^https?:\/\//, '');
+    $('backend-url-line').textContent = url;
+    const hasToken = !!(s.hosted_token && s.hosted_token.trim());
+    $('hosted-signin-btn').style.display = hasToken ? 'none' : 'block';
+    // Backfill is local-only for now (hits the user's claude.ai tab + local
+    // import script). Hide it when in hosted mode to avoid confusion.
+    $('backfill-section').style.display = 'none';
+  } else {
+    const url = (s.local_url || 'http://localhost:3122').replace(/^https?:\/\//, '');
+    $('backend-url-line').textContent = url;
+    $('hosted-signin-btn').style.display = 'none';
+  }
+
+  await setBackendStatus();
+  // Re-evaluate backfill visibility based on tab + mode
+  await setSiteLine();
+}
+
+async function setMode(prefer_hosted) {
+  await chrome.runtime.sendMessage({
+    type: 'mnueron:set_settings',
+    patch: { prefer_hosted },
+  });
+  await renderBackendMode();
+}
+
+$('mode-local').addEventListener('click',  () => setMode(false));
+$('mode-hosted').addEventListener('click', () => setMode(true));
+
+$('hosted-signin-btn').addEventListener('click', () => {
+  chrome.tabs.create({ url: HOSTED_TOKENS_URL });
+});
+
+// ─── Backend connection status ────────────────────────────────────────────
 async function setBackendStatus() {
   const dot = $('status-dot');
-  const line = $('backend-line');
+  const state = $('backend-state');
   try {
     const res = await chrome.runtime.sendMessage({ type: 'mnueron:ping' });
     if (res?.status?.ok) {
       dot.classList.remove('off');
-      line.textContent = 'connected';
-      line.style.color = '#a6ffc4';
+      state.textContent = 'connected';
+      state.className = 'state ok';
     } else {
       dot.classList.add('off');
-      line.textContent = 'not reachable';
-      line.style.color = '#ffa6b0';
+      state.textContent = res?.status?.error?.slice(0, 24) || 'not reachable';
+      state.className = 'state err';
     }
   } catch {
     dot.classList.add('off');
-    line.textContent = 'error';
-    line.style.color = '#ffa6b0';
+    state.textContent = 'error';
+    state.className = 'state err';
   }
 }
 
+// ─── Site detection ───────────────────────────────────────────────────────
 async function setSiteLine() {
   const tab = await activeTab();
   const site = siteFromUrl(tab?.url);
@@ -60,23 +113,23 @@ async function setSiteLine() {
   const unsupportedSection = $('unsupported-section');
 
   if (site === 'Gemini') {
-    // Show the capture section but disabled with explanatory text
     captureSection.style.display = 'block';
     unsupportedSection.style.display = 'none';
     line.innerHTML = `On <span class="name">Gemini</span> — scraper not yet implemented`;
     btn.disabled = true;
   } else if (site) {
-    // Supported chat site — capture is live
     captureSection.style.display = 'block';
     unsupportedSection.style.display = 'none';
     line.innerHTML = `On <span class="name">${site}</span>`;
     btn.disabled = false;
   } else {
-    // Not on a chat site — swap to the helpful "open a chat site" panel
     captureSection.style.display = 'none';
     unsupportedSection.style.display = 'block';
   }
-  // Backfill is only meaningful on claude.ai right now
+
+  // Backfill is Claude-only AND local-only (uses claude.ai's internal API +
+  // pipes to the configured backend; we keep it visible regardless of mode
+  // but it'll write to whichever backend is currently selected).
   $('backfill-section').style.display = (site === 'Claude') ? 'block' : 'none';
 }
 
@@ -99,7 +152,7 @@ function showToast(msg, kind = 'ok') {
   setTimeout(() => { t.className = `toast ${kind}`; }, 4000);
 }
 
-// ─── Event handlers ───────────────────────────────────────────────────────
+// ─── Capture button ───────────────────────────────────────────────────────
 $('open-options').addEventListener('click', e => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();
@@ -107,14 +160,16 @@ $('open-options').addEventListener('click', e => {
 
 async function openDashboardTab() {
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
-  const url = res?.settings?.local_url || 'http://localhost:3122';
+  const s = res?.settings ?? {};
+  const url = s.prefer_hosted && s.hosted_url
+    ? (s.hosted_url.replace(/\/$/, '') + '/dashboard')
+    : (s.local_url || 'http://localhost:3122');
   chrome.tabs.create({ url });
 }
 
 $('open-dashboard').addEventListener('click', openDashboardTab);
 $('open-dashboard-alt')?.addEventListener('click', openDashboardTab);
 
-// Quick-go buttons in the unsupported-site panel
 document.querySelectorAll('[data-go]').forEach(el => {
   el.addEventListener('click', () => {
     const url = el.getAttribute('data-go');
@@ -153,41 +208,57 @@ async function refreshBackfillProgress() {
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:backfill_status' });
   const s = res?.status;
   const box = $('backfill-progress');
-  const btn = $('backfill-btn');
-  const running = $('backfill-btn').dataset.running === '1';
+  const startBtn = $('backfill-btn');
+  const stopBtn  = $('backfill-stop-btn');
 
-  // No state yet, or never run
   if (!s) {
     box.style.display = 'none';
-    btn.textContent = 'Backfill all history';
-    btn.disabled = false;
+    startBtn.textContent = 'Backfill all history';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
     return;
   }
 
-  // Terminal states (done or error) — only honor them once we're not in mid-click
-  if (!running && s.status === 'done') {
+  // Terminal states: done / error / paused — Start/Resume button reappears
+  if (s.status === 'done') {
     $('backfill-line').textContent =
       `Done — ${s.done || 0} new, ${s.skipped || 0} already imported, ${s.errors || 0} errors`;
     $('backfill-line').style.color = '#a6ffc4';
     $('backfill-bar').style.width = '100%';
     $('backfill-bar').style.background = '#2a5a3a';
     box.style.display = 'block';
-    btn.textContent = 'Re-run backfill';
-    btn.disabled = false;
+    startBtn.textContent = 'Re-run backfill';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
     return;
   }
-  if (!running && s.status === 'error') {
+  if (s.status === 'error') {
     $('backfill-line').textContent = `Error — ${s.error || 'unknown failure'}`;
     $('backfill-line').style.color = '#ffa6b0';
     $('backfill-bar').style.width = '100%';
     $('backfill-bar').style.background = '#5a2530';
     box.style.display = 'block';
-    btn.textContent = 'Try again';
-    btn.disabled = false;
+    startBtn.textContent = 'Try again';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
+    return;
+  }
+  if (s.status === 'paused') {
+    const total = s.todo || s.total || 1;
+    const completed = (s.done || 0) + (s.errors || 0);
+    const pct = Math.min(100, Math.round((completed / Math.max(1, total)) * 100));
+    $('backfill-line').textContent = `Paused — ${completed}/${total}. Click Resume to continue.`;
+    $('backfill-line').style.color = '#ffd6a6';
+    $('backfill-bar').style.width = `${Math.max(2, pct)}%`;
+    $('backfill-bar').style.background = '#5a8a3a';
+    box.style.display = 'block';
+    startBtn.textContent = 'Resume backfill';
+    startBtn.disabled = false;
+    stopBtn.style.display = 'none';
     return;
   }
 
-  // Running (status is 'starting' or 'running', or we're mid-click)
+  // Active (starting / running)
   const total = s.todo || s.total || 1;
   const completed = (s.done || 0) + (s.errors || 0);
   const pct = Math.min(100, Math.round((completed / Math.max(1, total)) * 100));
@@ -196,40 +267,59 @@ async function refreshBackfillProgress() {
   $('backfill-bar').style.width = `${Math.max(2, pct)}%`;
   $('backfill-bar').style.background = '#3a5cf0';
   box.style.display = 'block';
-  btn.textContent = 'Backfilling…';
-  btn.disabled = true;
+  startBtn.textContent = 'Backfilling…';
+  startBtn.disabled = true;
+  stopBtn.style.display = 'block';
 }
 
 $('backfill-btn').addEventListener('click', async () => {
-  $('backfill-btn').dataset.running = '1';
   $('backfill-btn').disabled = true;
   $('backfill-btn').textContent = 'Backfilling…';
   $('backfill-progress').style.display = 'block';
   $('backfill-line').textContent = 'Starting…';
   $('backfill-bar').style.width = '2%';
+  $('backfill-stop-btn').style.display = 'block';
   try {
     const res = await chrome.runtime.sendMessage({ type: 'mnueron:backfill_start' });
     if (res?.ok) {
-      showToast(`✓ Backfill complete — ${res.result.done} new`, 'ok');
+      if (res.result?.paused) {
+        showToast('Backfill paused', 'ok');
+      } else {
+        showToast(`✓ Backfill complete — ${res.result.done} new`, 'ok');
+      }
     } else {
       showToast(res?.error || 'backfill failed', 'err');
     }
   } catch (e) {
     showToast(e.message, 'err');
   } finally {
-    delete $('backfill-btn').dataset.running;
     await refreshBackfillProgress();
     await setTodayCount();
   }
 });
 
-// Poll progress every 600ms while popup is open
+$('backfill-stop-btn').addEventListener('click', async () => {
+  $('backfill-stop-btn').textContent = 'Stopping…';
+  $('backfill-stop-btn').disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'mnueron:backfill_stop' });
+    // Poll will pick up the 'paused' state and re-render shortly.
+    showToast('Stopping…', 'ok');
+  } catch (e) {
+    showToast(e.message, 'err');
+  } finally {
+    setTimeout(() => {
+      $('backfill-stop-btn').textContent = 'Stop';
+      $('backfill-stop-btn').disabled = false;
+    }, 1500);
+  }
+});
+
 let backfillPoll = setInterval(refreshBackfillProgress, 600);
 window.addEventListener('unload', () => clearInterval(backfillPoll));
 
 // ─── Boot ─────────────────────────────────────────────────────────────────
-setSiteLine();
-setBackendStatus();
+renderBackendMode();
 setTodayCount();
 setAutoToggle();
 refreshBackfillProgress();

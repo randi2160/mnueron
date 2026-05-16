@@ -130,6 +130,24 @@
     </div>
   </fieldset>
 
+  <fieldset>
+    <legend>Migrate local → hosted</legend>
+    <p style="margin: 0 0 10px; color: #8a92a6; font-size: 12px;">
+      Copy every memory in your local mnueron store up to the hosted account
+      configured above. Idempotent — re-running won&apos;t duplicate memories
+      (existing source_ref values are deduped server-side).
+    </p>
+    <div class="actions" style="margin-top: 0;">
+      <button id="migrate" class="secondary" style="border-color:#5b2cff;color:#cab9ff;">Migrate now</button>
+    </div>
+    <div id="migrate-progress" style="display:none; margin-top:12px; font-size:12px; color:#8a92a6">
+      <div id="migrate-line">Starting…</div>
+      <div style="background:#1d2230; height:6px; border-radius:3px; margin-top:6px; overflow:hidden">
+        <div id="migrate-bar" style="background:#5b2cff; height:100%; width:0%; transition:width .2s"></div>
+      </div>
+    </div>
+  </fieldset>
+
   <div class="actions">
     <button id="save">Save</button>
     <button class="secondary" id="test">Test connection</button>

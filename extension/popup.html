@@ -7,7 +7,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    width: 320px;
+    width: 340px;
     font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     background: #0f1115;
     color: #d6dae3;
@@ -39,12 +39,14 @@
   header .settings:hover { color: #d6dae3; }
 
   section { padding: 12px 16px; border-bottom: 1px solid #161a26; }
-  .status-line {
-    display: flex; justify-content: space-between;
-    color: #8a92a6; font-size: 12px;
-    margin: 2px 0;
+
+  .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6c7488;
+    margin: 0 0 8px;
   }
-  .status-line .v { color: #d6dae3; font-variant-numeric: tabular-nums; }
 
   .site {
     color: #6c7488;
@@ -63,7 +65,7 @@
     font-weight: 500;
     font: inherit;
     cursor: pointer;
-    transition: background .15s;
+    transition: background .15s, opacity .15s;
   }
   button:hover:not(:disabled) { background: #4a6bff; }
   button:disabled {
@@ -79,7 +81,13 @@
     margin-top: 8px;
     font-weight: 400;
   }
-  button.secondary:hover { background: #232938; }
+  button.secondary:hover:not(:disabled) { background: #232938; }
+  button.danger {
+    background: #2a151b;
+    border-color: #5a2530;
+    color: #ffa6b0;
+  }
+  button.danger:hover:not(:disabled) { background: #3a1f25; }
 
   .toast {
     margin-top: 8px;
@@ -94,6 +102,53 @@
 
   .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8a92a6; margin: 6px 0 0; }
   .row input[type=checkbox] { accent-color: #3a5cf0; }
+
+  /* Segmented control for Local/Hosted toggle */
+  .segmented {
+    display: flex;
+    background: #1d2230;
+    padding: 3px;
+    border-radius: 8px;
+    border: 1px solid #232938;
+  }
+  .segmented button {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #8a92a6;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    margin: 0;
+  }
+  .segmented button.active {
+    background: #3a5cf0;
+    color: #fff;
+  }
+  .segmented button:hover:not(.active) { color: #d6dae3; background: transparent; }
+
+  .backend-status {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: #11141c;
+    border: 1px solid #1f2330;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+  }
+  .backend-status .meta { color: #8a92a6; font-family: ui-monospace, monospace; font-size: 11px; }
+  .backend-status .state.ok { color: #a6ffc4; }
+  .backend-status .state.err { color: #ffa6b0; }
+
+  /* Backfill row with Stop button beside progress */
+  .backfill-controls { display: flex; gap: 6px; align-items: stretch; }
+  .backfill-controls button { width: auto; flex: 1; }
+  .backfill-controls button.stop-btn { flex: 0 0 70px; }
+
   footer { padding: 10px 16px; font-size: 11px; color: #6c7488; }
 </style>
 </head>
@@ -103,6 +158,21 @@
   <a href="#" id="open-options" class="settings">Settings</a>
 </header>
 
+<!-- ─── Backend mode toggle ─────────────────────────────────────────── -->
+<section>
+  <p class="label">Backend</p>
+  <div class="segmented" role="tablist">
+    <button id="mode-local"  role="tab" class="active">Local</button>
+    <button id="mode-hosted" role="tab">Hosted</button>
+  </div>
+  <div class="backend-status">
+    <span class="meta" id="backend-url-line">127.0.0.1:3122</span>
+    <span class="state" id="backend-state">checking…</span>
+  </div>
+  <button class="secondary" id="hosted-signin-btn" style="display:none">Sign in to mnueron.com →</button>
+</section>
+
+<!-- ─── Capture ─────────────────────────────────────────────────────── -->
 <section id="capture-section">
   <div class="site" id="site-line">Detecting page…</div>
   <button id="capture-btn" disabled>Capture chat</button>
@@ -120,9 +190,13 @@
   <button class="secondary" id="open-dashboard-alt">Open dashboard</button>
 </section>
 
+<!-- ─── Backfill (Claude only) ──────────────────────────────────────── -->
 <section id="backfill-section" style="display:none">
   <div class="site"><span class="name">Backfill</span> — import every past Claude chat</div>
-  <button id="backfill-btn">Backfill all history</button>
+  <div class="backfill-controls">
+    <button id="backfill-btn">Backfill all history</button>
+    <button id="backfill-stop-btn" class="stop-btn danger" style="display:none">Stop</button>
+  </div>
   <div id="backfill-progress" style="display:none; margin-top:10px; font-size:12px; color:#8a92a6">
     <div id="backfill-line">Starting…</div>
     <div style="background:#1d2230; height:6px; border-radius:3px; margin-top:6px; overflow:hidden">
@@ -131,9 +205,12 @@
   </div>
 </section>
 
+<!-- ─── Today + auto-capture ────────────────────────────────────────── -->
 <section>
-  <div class="status-line"><span>Backend</span><span class="v" id="backend-line">checking…</span></div>
-  <div class="status-line"><span>Captures today</span><span class="v" id="today-line">0</span></div>
+  <div class="row" style="justify-content:space-between;">
+    <span>Captures today</span>
+    <span class="v" id="today-line" style="color:#d6dae3; font-variant-numeric:tabular-nums;">0</span>
+  </div>
   <div class="row">
     <input type="checkbox" id="auto-toggle" />
     <label for="auto-toggle">Auto-capture (passive)</label>
@@ -141,7 +218,7 @@
 </section>
 
 <footer>
-  mnueron · local-first AI memory
+  mnueron · memory for every AI
 </footer>
 
 <script src="popup.js"></script>

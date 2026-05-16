@@ -193,9 +193,26 @@ async function setBackfillProgress(patch) {
   await chrome.storage.local.set({ backfill_progress: { ...cur, ...patch, ts: Date.now() } });
 }
 
+/**
+ * Stop flag. The backfill loop reads this between iterations and exits
+ * cleanly with status='paused' if true. Set by mnueron:backfill_stop.
+ * Cleared at the start of every new backfill run.
+ */
+async function isStopRequested() {
+  const r = await chrome.storage.local.get('backfill_stop_requested');
+  return !!r.backfill_stop_requested;
+}
+
+async function setStopRequested(v) {
+  await chrome.storage.local.set({ backfill_stop_requested: !!v });
+}
+
 async function startBackfill() {
   const settings = await getSettings();
   const tab = await findClaudeTab();
+
+  // Fresh run = clear any stale stop signal from a previous pause.
+  await setStopRequested(false);
 
   // Replace, not merge — clear any stale fields from a prior run.
   await chrome.storage.local.set({
@@ -240,6 +257,18 @@ async function startBackfill() {
 
   let done = 0, errors = 0;
   for (const conv of todo) {
+    // Honor Stop button — exit cleanly. Already-imported uuids are
+    // persisted below so Resume picks up where we left off automatically.
+    if (await isStopRequested()) {
+      await chrome.storage.local.set({ imported_chat_uuids: [...imported] });
+      await setBackfillProgress({
+        status: 'paused',
+        done, errors,
+        current: null,
+      });
+      await setStopRequested(false);
+      return { done, errors, skipped: skippedCount, total: conversations.length, paused: true };
+    }
     await setBackfillProgress({ current: conv.name || conv.uuid });
     try {
       const full = await chrome.tabs.sendMessage(tab.id, {
@@ -315,6 +344,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg.type === 'mnueron:backfill_start') {
         const result = await startBackfill();
         sendResponse({ ok: true, result });
+      } else if (msg.type === 'mnueron:backfill_stop') {
+        // Set the flag; the running loop reads it between iterations and
+        // will flip status to 'paused' on its next check. We don't wait
+        // for that here — the popup polls status separately.
+        await setStopRequested(true);
+        sendResponse({ ok: true });
       } else if (msg.type === 'mnueron:backfill_status') {
         const s = (await chrome.storage.local.get('backfill_progress')).backfill_progress || null;
         sendResponse({ ok: true, status: s });

@@ -1,11 +1,24 @@
 {
   "manifest_version": 3,
   "name": "mnueron — AI chat memory",
-  "version": "0.1.0",
-  "description": "Capture your conversations from Claude, ChatGPT, and Gemini into your local mnueron memory layer.",
+  "version": "0.2.0",
+  "description": "Save your conversations from Claude, ChatGPT, and Gemini into your personal mnueron memory layer — local or cloud.",
+  "homepage_url": "https://mnueron.com",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "mnueron — capture this chat"
+    "default_title": "mnueron — capture this chat",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "background": {
     "service_worker": "background.js",
@@ -23,6 +36,8 @@
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://gemini.google.com/*",
+    "https://mnueron.com/*",
+    "https://*.mnueron.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],

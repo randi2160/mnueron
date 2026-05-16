@@ -8,7 +8,43 @@ import { chunkContent, shouldChunk, DEFAULT_CHUNK_THRESHOLD } from './chunking.j
 import { redact } from './redactor.js';
 import type {
   Provider, Memory, SaveMemoryInput, SearchInput, ListInput, NamespaceInfo,
+  MemoryFilters, BulkSearchInput, BulkSearchResult, UpdateMemoryInput,
 } from './provider.js';
+
+/**
+ * Build a SQL fragment + params for the shared filter shape used by
+ * search() and list(). Returns clauses joined by AND (always at least
+ * `1=1` so callers can append `${...}` after `WHERE`).
+ *
+ * The `m.` prefix is hard-coded — callers must alias their memories table
+ * as `m` for these clauses to bind. (The whole local store uses one table
+ * named `memories`, but the search path joins, so consistent aliasing is
+ * what keeps this reusable.)
+ */
+function buildFilterFragment(f: MemoryFilters, alias = 'm'): { sql: string; params: unknown[] } {
+  const parts: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const a = alias ? `${alias}.` : '';
+  if (f.namespace) { parts.push(`${a}namespace = ?`); params.push(f.namespace); }
+  if (f.created_after  != null) { parts.push(`${a}created_at >= ?`); params.push(f.created_after); }
+  if (f.created_before != null) { parts.push(`${a}created_at <= ?`); params.push(f.created_before); }
+  if (f.updated_after  != null) { parts.push(`${a}updated_at >= ?`); params.push(f.updated_after); }
+  if (f.updated_before != null) { parts.push(`${a}updated_at <= ?`); params.push(f.updated_before); }
+
+  // metadata_filter: SQLite has no native @> operator, but we can match
+  // every top-level k=v pair via json_extract. We only support strings,
+  // numbers, and booleans on the RHS — nested objects are not supported
+  // in this minimal port. Matches what most callers actually use.
+  if (f.metadata_filter && typeof f.metadata_filter === 'object') {
+    for (const [k, v] of Object.entries(f.metadata_filter)) {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        parts.push(`json_extract(${a}metadata, '$.' || ?) = ?`);
+        params.push(k, v);
+      }
+    }
+  }
+  return { sql: parts.join(' AND '), params };
+}
 
 /**
  * Run pre-save transforms in fixed order:
@@ -415,18 +451,19 @@ export class LocalProvider implements Provider {
   async search(input: SearchInput): Promise<Memory[]> {
     const k = input.k ?? 10;
 
-    // FTS5 leg
+    // FTS5 leg — now honors all MemoryFilters (date range + metadata filter).
     const safeQuery = buildFtsQuery(input.query);
     const ftsRanks = new Map<string, number>();   // id → 1-based rank
     if (safeQuery) {
+      const filter = buildFilterFragment(input, 'm');
       let sql = `
         SELECT m.id
         FROM memories_fts f
         JOIN memories m ON m.id = f.content_id
         WHERE memories_fts MATCH ?
+          AND ${filter.sql}
       `;
-      const params: unknown[] = [safeQuery];
-      if (input.namespace) { sql += ` AND m.namespace = ?`; params.push(input.namespace); }
+      const params: unknown[] = [safeQuery, ...filter.params];
       sql += ` ORDER BY bm25(memories_fts) LIMIT 50`;
       const rows = this.db.prepare(sql).all(...params) as any[];
       rows.forEach((r, i) => ftsRanks.set(r.id, i + 1));
@@ -509,18 +546,24 @@ export class LocalProvider implements Provider {
   }
 
   async list(input: ListInput): Promise<Memory[]> {
-    let sql = `SELECT * FROM memories WHERE 1=1`;
-    const params: unknown[] = [];
-    if (input.namespace) {
-      sql += ` AND namespace = ?`;
-      params.push(input.namespace);
-    }
+    // v0.2.1 + v0.2.4: full filter support via shared helper.
+    // Note: 'm' alias is omitted here because list() doesn't join other
+    // tables, so we pass alias = '' to skip the prefix.
+    const filter = buildFilterFragment(input, '');
+    let sql = `SELECT * FROM memories WHERE ${filter.sql}`;
+    const params: unknown[] = [...filter.params];
+
+    // Keep legacy `before` cursor working for older SDK callers.
     if (input.before) {
       sql += ` AND created_at < ?`;
       params.push(input.before);
     }
     sql += ` ORDER BY created_at DESC LIMIT ?`;
     params.push(input.limit ?? 50);
+    if (input.offset && input.offset > 0) {
+      sql += ` OFFSET ?`;
+      params.push(input.offset);
+    }
 
     const rows = this.db.prepare(sql).all(...params) as any[];
     let memories = rows.map(r => this.rowToMemory(r));
@@ -530,6 +573,115 @@ export class LocalProvider implements Provider {
       memories = memories.filter(m => m.tags.some(t => wanted.has(t)));
     }
     return memories;
+  }
+
+  /**
+   * v0.2.3 — bulk search: same scope, multiple queries, one call.
+   * SQLite is single-threaded; the only saving here is the function-call
+   * overhead. The hosted version's savings are larger (one HTTP RTT). For
+   * API parity, exposed under the same Provider method either way.
+   */
+  async bulkSearch(input: BulkSearchInput): Promise<BulkSearchResult[]> {
+    const k = input.k ?? 5;
+    const out: BulkSearchResult[] = [];
+    for (const q of input.queries) {
+      const hits = await this.search({
+        query: q, k,
+        namespace: input.namespace,
+        tags: input.tags,
+        created_after:  input.created_after,
+        created_before: input.created_before,
+        updated_after:  input.updated_after,
+        updated_before: input.updated_before,
+        metadata_filter: input.metadata_filter,
+      });
+      out.push({ query: q, hits });
+    }
+    return out;
+  }
+
+  /**
+   * v0.2.2 — partial update. Re-runs redaction + chunking-aware embed for
+   * the content path. Logs change to metadata.history so the same audit
+   * trail works against local and hosted.
+   *
+   * Returns the updated Memory or null if id wasn't found.
+   */
+  async update(id: string, patch: UpdateMemoryInput): Promise<Memory | null> {
+    const existing = this.db.prepare(`SELECT * FROM memories WHERE id = ?`).get(id) as any;
+    if (!existing) return null;
+
+    // Build merged metadata + history entry
+    const priorMeta: Record<string, unknown> =
+      typeof existing.metadata === 'string'
+        ? (JSON.parse(existing.metadata || '{}') as Record<string, unknown>)
+        : (existing.metadata ?? {});
+    const merged: Record<string, unknown> = { ...priorMeta };
+    if (patch.metadata && typeof patch.metadata === 'object') {
+      for (const [k, v] of Object.entries(patch.metadata)) {
+        if (v === null) delete merged[k]; else merged[k] = v;
+      }
+    }
+
+    const nextContent =
+      patch.content != null ? redact(patch.content).content : existing.content;
+    const contentChanged = nextContent !== existing.content;
+    if (contentChanged) {
+      const history = Array.isArray(merged.history)
+        ? (merged.history as unknown[]).slice(0)
+        : [];
+      history.push({
+        at: Date.now(),
+        prev_content_len: typeof existing.content === 'string' ? existing.content.length : 0,
+      });
+      merged.history = history;
+    }
+
+    const nextNs   = patch.namespace ?? existing.namespace;
+    const nextTags = patch.tags      ?? JSON.parse(existing.tags ?? '[]');
+    const now = Date.now();
+
+    this.db.prepare(
+      `UPDATE memories
+          SET content   = ?,
+              namespace = ?,
+              tags      = ?,
+              metadata  = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      nextContent,
+      nextNs,
+      JSON.stringify(nextTags),
+      JSON.stringify(merged),
+      now,
+      id,
+    );
+
+    // If content changed, re-index FTS + (optionally) re-embed.
+    if (contentChanged) {
+      this.db.prepare(`DELETE FROM memories_fts WHERE content_id = ?`).run(id);
+      this.db.prepare(
+        `INSERT INTO memories_fts (content_id, content) VALUES (?, ?)`,
+      ).run(id, nextContent);
+
+      if (this.vecAvailable) {
+        try {
+          const v = await embed(nextContent);
+          if (v) {
+            this.db.prepare(`DELETE FROM memories_vec WHERE memory_id = ?`).run(id);
+            this.db.prepare(
+              `INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)`,
+            ).run(id, Buffer.from(v.buffer));
+          }
+        } catch (e) {
+          process.stderr.write(`[mnueron] re-embed on update failed: ${(e as Error).message}\n`);
+        }
+      }
+    }
+
+    const fresh = this.db.prepare(`SELECT * FROM memories WHERE id = ?`).get(id) as any;
+    return fresh ? this.rowToMemory(fresh) : null;
   }
 
   async get(id: string): Promise<Memory | null> {

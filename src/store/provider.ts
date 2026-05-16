@@ -26,18 +26,51 @@ export interface SaveMemoryInput {
   metadata?: Record<string, unknown>;
 }
 
-export interface SearchInput {
-  query: string;
+/**
+ * Shared filter fields. The hosted /api/memories endpoints accept all of
+ * these too — keeping the shapes identical means SDK code is portable
+ * across local + hosted without branching.
+ */
+export interface MemoryFilters {
   namespace?: string;
-  k?: number;
   tags?: string[];
+  /** v0.2.1 — inclusive epoch-ms date bounds */
+  created_after?: number;
+  created_before?: number;
+  updated_after?: number;
+  updated_before?: number;
+  /** v0.2.4 — metadata containment (top-level key=value matches via JSON). */
+  metadata_filter?: Record<string, unknown>;
 }
 
-export interface ListInput {
-  namespace?: string;
+export interface SearchInput extends MemoryFilters {
+  query: string;
+  k?: number;
+}
+
+export interface ListInput extends MemoryFilters {
   limit?: number;
-  before?: number;       // unix ms cursor
+  offset?: number;
+  before?: number;       // legacy unix ms cursor; prefer updated_before
+}
+
+/** v0.2.3 — multi-query search in one call. */
+export interface BulkSearchInput extends MemoryFilters {
+  queries: string[];
+  k?: number;
+}
+
+export interface BulkSearchResult {
+  query: string;
+  hits: Memory[];
+}
+
+/** v0.2.2 — partial update. Unspecified fields are left untouched. */
+export interface UpdateMemoryInput {
+  content?: string;
+  namespace?: string;
   tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface NamespaceInfo {
@@ -49,8 +82,12 @@ export interface NamespaceInfo {
 export interface Provider {
   save(input: SaveMemoryInput): Promise<Memory>;
   search(input: SearchInput): Promise<Memory[]>;
+  /** v0.2.3 — run N queries against the same scope; same RTT as one call. */
+  bulkSearch?(input: BulkSearchInput): Promise<BulkSearchResult[]>;
   list(input: ListInput): Promise<Memory[]>;
   get(id: string): Promise<Memory | null>;
+  /** v0.2.2 — partial update. Re-embeds if content changed. Logs to metadata.history. */
+  update?(id: string, patch: UpdateMemoryInput): Promise<Memory | null>;
   delete(id: string): Promise<boolean>;
   namespaces(): Promise<NamespaceInfo[]>;
   bulkSave(inputs: SaveMemoryInput[]): Promise<{ saved: number; errors: number }>;

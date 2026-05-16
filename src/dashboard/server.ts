@@ -95,10 +95,53 @@ async function route(p: Provider, req: IncomingMessage, res: ServerResponse) {
     const namespace = url.searchParams.get('namespace') || undefined;
     const q = (url.searchParams.get('q') || '').trim();
     const limit = clampInt(url.searchParams.get('limit'), 50, 1, 500);
+    const offset = clampInt(url.searchParams.get('offset'), 0, 0, 100_000);
+    // v0.2.1 — date filters (epoch ms)
+    const created_after  = parseEpochMs(url.searchParams.get('created_after'));
+    const created_before = parseEpochMs(url.searchParams.get('created_before'));
+    const updated_after  = parseEpochMs(url.searchParams.get('updated_after'));
+    const updated_before = parseEpochMs(url.searchParams.get('updated_before'));
+    // v0.2.4 — metadata containment via URL-encoded JSON
+    const metadata_filter = parseJsonObject(url.searchParams.get('metadata_filter'));
+
+    const filters = {
+      namespace, created_after, created_before, updated_after, updated_before, metadata_filter,
+    };
     if (q) {
-      return sendJson(res, 200, await p.search({ query: q, namespace, k: limit }));
+      return sendJson(res, 200, await p.search({ query: q, k: limit, ...filters }));
     }
-    return sendJson(res, 200, await p.list({ namespace, limit }));
+    return sendJson(res, 200, await p.list({ limit, offset, ...filters }));
+  }
+
+  // v0.2.3 — bulk search
+  if (method === 'POST' && path === '/api/memories/search/bulk') {
+    const body = await readBody(req);
+    let parsed: any;
+    try { parsed = JSON.parse(body); }
+    catch { return sendJson(res, 400, { error: 'invalid JSON body' }); }
+    const queries = Array.isArray(parsed.queries)
+      ? parsed.queries.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0)
+      : [];
+    if (queries.length === 0) {
+      return sendJson(res, 400, { error: 'queries[] required (non-empty strings)' });
+    }
+    if (typeof (p as any).bulkSearch !== 'function') {
+      return sendJson(res, 501, { error: 'provider does not support bulkSearch' });
+    }
+    const out = await (p as any).bulkSearch({
+      queries,
+      namespace: parsed.namespace,
+      k: clampInt(parsed.k, 5, 1, 50),
+      metadata_filter:
+        parsed.metadata_filter && typeof parsed.metadata_filter === 'object'
+          ? parsed.metadata_filter
+          : undefined,
+      created_after:
+        typeof parsed.created_after === 'number' ? parsed.created_after : undefined,
+      created_before:
+        typeof parsed.created_before === 'number' ? parsed.created_before : undefined,
+    });
+    return sendJson(res, 200, { results: out });
   }
 
   if (method === 'POST' && path === '/api/memories') {
@@ -128,6 +171,24 @@ async function route(p: Provider, req: IncomingMessage, res: ServerResponse) {
       const mem = await p.get(id);
       if (!mem) return sendJson(res, 404, { error: 'not found' });
       return sendJson(res, 200, mem);
+    }
+    if (method === 'PATCH') {
+      // v0.2.2 — partial update with metadata.history audit trail
+      if (typeof (p as any).update !== 'function') {
+        return sendJson(res, 501, { error: 'provider does not support update' });
+      }
+      const body = await readBody(req);
+      let patch: any;
+      try { patch = JSON.parse(body); }
+      catch { return sendJson(res, 400, { error: 'invalid JSON body' }); }
+      const updated = await (p as any).update(id, {
+        content:   typeof patch.content   === 'string' ? patch.content   : undefined,
+        namespace: typeof patch.namespace === 'string' ? patch.namespace : undefined,
+        tags:      Array.isArray(patch.tags) ? patch.tags.map(String) : undefined,
+        metadata:  patch.metadata && typeof patch.metadata === 'object' ? patch.metadata : undefined,
+      });
+      if (!updated) return sendJson(res, 404, { error: 'not found' });
+      return sendJson(res, 200, updated);
     }
     if (method === 'DELETE') {
       const ok = await p.delete(id);
@@ -238,4 +299,27 @@ function clampInt(s: string | null, dflt: number, min: number, max: number): num
   const n = parseInt(s, 10);
   if (!Number.isFinite(n)) return dflt;
   return Math.max(min, Math.min(max, n));
+}
+
+/** Parse a single epoch-ms query value, or null when missing/invalid. */
+function parseEpochMs(s: string | null): number | undefined {
+  if (s == null || s === '') return undefined;
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Parse a URL-encoded JSON object query parameter (used for metadata_filter).
+ * Returns undefined when missing or invalid — silently fails closed so a
+ * bad client param doesn't 500 the whole list endpoint.
+ */
+function parseJsonObject(s: string | null): Record<string, unknown> | undefined {
+  if (s == null || s === '') return undefined;
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch { /* swallow */ }
+  return undefined;
 }

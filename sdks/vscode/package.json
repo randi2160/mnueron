@@ -1,0 +1,170 @@
+{
+  "name": "mnueron-vscode",
+  "displayName": "mnueron — AI memory",
+  "description": "Save, search, and inject memories from mnueron — works alongside Copilot, Cursor, and Cline.",
+  "version": "0.1.0",
+  "publisher": "mnueron",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "AI",
+    "Notebooks"
+  ],
+  "keywords": [
+    "ai",
+    "memory",
+    "copilot",
+    "claude",
+    "context",
+    "mcp"
+  ],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mnueron.saveSelection",
+        "title": "mnueron: Save selection as memory",
+        "icon": "$(save)"
+      },
+      {
+        "command": "mnueron.recall",
+        "title": "mnueron: Recall memory…",
+        "icon": "$(search)"
+      },
+      {
+        "command": "mnueron.openMemory",
+        "title": "mnueron: Open memory by ID",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "mnueron.refreshSidebar",
+        "title": "mnueron: Refresh memory sidebar",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mnueron.switchNamespace",
+        "title": "mnueron: Switch active namespace",
+        "icon": "$(folder-active)"
+      },
+      {
+        "command": "mnueron.openDashboard",
+        "title": "mnueron: Open dashboard in browser"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "mnueron.saveSelection",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "mnueron.recall",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "mnueron.saveSelection",
+          "when": "editorHasSelection",
+          "group": "9_mnueron"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "mnueron.refreshSidebar",
+          "when": "view == mnueronMemories",
+          "group": "navigation"
+        },
+        {
+          "command": "mnueron.switchNamespace",
+          "when": "view == mnueronMemories",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mnueron",
+          "title": "mnueron",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "mnueron": [
+        {
+          "id": "mnueronMemories",
+          "name": "Memories",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "mnueron",
+      "properties": {
+        "mnueron.mode": {
+          "type": "string",
+          "enum": [
+            "local",
+            "hosted"
+          ],
+          "default": "local",
+          "description": "Talk to the local CLI (127.0.0.1:3122) or the hosted backend (mnueron.com)."
+        },
+        "mnueron.hostedUrl": {
+          "type": "string",
+          "default": "https://www.mnueron.com",
+          "description": "Hosted backend base URL."
+        },
+        "mnueron.localUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3122",
+          "description": "Local mnueron dashboard server URL."
+        },
+        "mnueron.apiToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token (mnu_…) for hosted mode. Issue one at /account-settings/tokens. Leave blank for local mode."
+        },
+        "mnueron.activeNamespace": {
+          "type": "string",
+          "default": "vscode",
+          "description": "Namespace to use for saves from this editor. Switch via the command palette."
+        },
+        "mnueron.ambientContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "When opening a file, search mnueron for related memories and show a count in the status bar."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randi2160/mnueron.git",
+    "directory": "sdks/vscode"
+  },
+  "homepage": "https://www.mnueron.com",
+  "license": "MIT"
+}

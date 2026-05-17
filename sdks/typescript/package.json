@@ -1,0 +1,51 @@
+{
+  "name": "@mnueron/sdk",
+  "version": "0.3.1",
+  "description": "TypeScript SDK for the mnueron memory backend (hosted at mnueron.com)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node ./scripts/fixup-cjs.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "agents",
+    "llm",
+    "mcp",
+    "claude",
+    "mnueron"
+  ],
+  "author": "mnueron <khemlall.mangal@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://www.mnueron.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randi2160/mnueron.git",
+    "directory": "sdks/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/randi2160/mnueron/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

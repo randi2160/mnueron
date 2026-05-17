@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+  <!-- mnueron's "N in orbit" mark, simplified for monochrome activity-bar use.
+       Activity-bar icons MUST be single-color and SVG to inherit VS Code's
+       theme tint correctly. -->
+  <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.45"/>
+  <path d="M7.5 16V8h1.6l5.4 5.5V8h1.5v8h-1.6L9 10.5V16H7.5z"/>
+</svg>

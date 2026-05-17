@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "mnueron — AI chat memory",
-  "version": "0.2.0",
-  "description": "Save your conversations from Claude, ChatGPT, and Gemini into your personal mnueron memory layer — local or cloud.",
+  "name": "mnueron \u2014 AI chat memory",
+  "version": "0.2.1",
+  "description": "Save your conversations from Claude, ChatGPT, and Gemini into your personal mnueron memory layer \u2014 local or cloud.",
   "homepage_url": "https://mnueron.com",
   "icons": {
     "16": "icons/icon-16.png",
@@ -12,7 +12,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "mnueron — capture this chat",
+    "default_title": "mnueron \u2014 capture this chat",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -43,18 +43,34 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["scrapers/claude.js", "scrapers/ambient.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "scrapers/claude.js",
+        "scrapers/ambient.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["scrapers/chatgpt.js", "scrapers/ambient.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "scrapers/chatgpt.js",
+        "scrapers/ambient.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["scrapers/gemini.js", "scrapers/ambient.js"],
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "scrapers/gemini.js",
+        "scrapers/ambient.js"
+      ],
       "run_at": "document_idle"
     }
   ]

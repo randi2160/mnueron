@@ -280,8 +280,25 @@ async function captureFromTab(tabId, tabUrl) {
     throw new Error('No messages found on this page.');
   }
 
+  // Quality gate — refuse to save the well-known failure mode where the
+  // DOM scraper's last-resort fallback grabbed just the title heading.
+  // Symptoms: every message is < 30 chars, OR every message has role
+  // 'unknown', OR the transcript reads like only the title rendered.
+  const meaningful = chat.messages.filter(m => (m.content || '').trim().length >= 30);
+  if (meaningful.length === 0) {
+    console.warn('[mnueron/capture] all messages too short — likely title-only scrape:',
+      chat.messages.map(m => ({ role: m.role, len: (m.content || '').length, preview: (m.content || '').slice(0, 40) })));
+    throw new Error('Captured content looks like just a title. The scraper may need updating — open DevTools console for details, or report at github.com/randi2160/mnueron with the page URL.');
+  }
+  const distinctRoles = new Set(chat.messages.map(m => m.role).filter(r => r && r !== 'unknown'));
+  if (distinctRoles.size === 0) {
+    console.warn('[mnueron/capture] no recognised roles (all unknown) — selectors are stale:',
+      chat.messages.map(m => m.role));
+    throw new Error('Scraper could not identify user vs assistant turns. Selectors may be stale.');
+  }
+
   const transcript = renderTranscript(chat);
-  if (transcript.length < 20) throw new Error('Captured transcript looks empty.');
+  if (transcript.length < 100) throw new Error('Captured transcript looks empty.');
 
   const settings = await getSettings();
   const namespace = `${settings.namespace_prefix}-${site}`;

@@ -36,6 +36,22 @@ What changes day-to-day:
 - **In your apps:** When a user comes back, the AI already knows their preferences — without you wiring it up per-provider.
 - **Across providers:** Switch from OpenAI to Claude to Mistral without losing your customer's history. The memory layer is the constant.
 
+## What's new
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history. Headlines:
+
+- **`mnueron primer`** — emit a CLAUDE.md / cursorrules-style memory primer (`mnueron primer > CLAUDE.md`)
+- **5 more IDE detectors** — Continue, Zed, Aider, Goose, OpenCode
+- **Platform API gaps closed** — date-range filter, PATCH update, bulk search, metadata-field filter
+- **Webhook subscriptions** — HMAC-signed POSTs on memory events
+- **Fact extraction** — long assistant responses get distilled into searchable facts
+- **Backend secret redaction** — defense in depth on top of the client-side redactor
+- **Chrome extension v0.2.0** — Local/Hosted toggle, recall + inject, ambient context, build-prompt multi-select
+- **SDKs refreshed** — Python `0.3.1` + .NET `0.3` cover the new endpoints (date filters, PATCH, bulk search, webhook CRUD, HMAC verifier)
+- **Claude Desktop import** — `mnueron import --claude-desktop` probes for and ingests Claude Desktop's export JSON
+
+Full API docs at [mnueron.com/docs/api/overview](https://mnueron.com/docs/api/overview).
+
 ## What you get out of the box — free, forever
 
 Run `mnueron setup` and every single one of these is yours. No account, no credit card, no telemetry. Your data lives at `~/.mnueron/memories.db` and never leaves your computer unless you explicitly opt into hosted mode.

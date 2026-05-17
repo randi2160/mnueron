@@ -71,11 +71,48 @@
     // sits in a "turn" container whose ancestor has a specific shape.
     const proses = [...document.querySelectorAll('main .prose, .prose')];
     if (!proses.length) return null;
-    return proses.map(el => {
+    const msgs = proses.map(el => {
       const turn = el.closest('[data-test-render-count], [class*="turn"], [class*="group"]') || el.parentElement;
       const role = guessRoleFromTurn(turn);
       return { role, content: extractText(el) };
     }).filter(m => m.content);
+
+    // Bail if results look like the well-known title-only failure mode:
+    //   - all messages have role 'unknown' (couldn't tell user vs assistant)
+    //   - OR every message is shorter than 30 chars (probably just headings)
+    //   - OR fewer than 2 distinct messages (real chats have at least one turn)
+    if (msgs.length < 2) {
+      console.warn(`${TAG} strat_proseTurns only found ${msgs.length} message — falling through`);
+      return null;
+    }
+    const knownRoles = msgs.filter(m => m.role === 'user' || m.role === 'assistant').length;
+    if (knownRoles === 0) {
+      console.warn(`${TAG} strat_proseTurns: all messages role=unknown — falling through`);
+      return null;
+    }
+    const meaningful = msgs.filter(m => (m.content || '').trim().length >= 30).length;
+    if (meaningful === 0) {
+      console.warn(`${TAG} strat_proseTurns: every message < 30 chars (title-only?) — falling through`);
+      return null;
+    }
+    return msgs;
+  }
+
+  function strat_articleWalk() {
+    // Broader sweep: walk any element with role="article" or aria-label
+    // containing "message". Catches a-b testing variants that don't use
+    // the testid/font-class patterns yet.
+    const nodes = [...document.querySelectorAll(
+      '[role="article"], [aria-label*="message" i], [aria-label*="conversation turn" i]'
+    )];
+    if (nodes.length < 2) return null;
+    const msgs = nodes.map(n => {
+      const role = guessRoleFromTurn(n);
+      return { role, content: extractText(n) };
+    }).filter(m => m.content && m.content.length >= 30);
+    const knownRoles = msgs.filter(m => m.role === 'user' || m.role === 'assistant').length;
+    if (msgs.length < 2 || knownRoles === 0) return null;
+    return msgs;
   }
 
   function guessRoleFromTurn(turn) {
@@ -116,6 +153,7 @@
     const strategies = [
       ['testid', strat_testid],
       ['fontClass', strat_fontClass],
+      ['articleWalk', strat_articleWalk],
       ['proseTurns', strat_proseTurns],
     ];
     for (const [name, fn] of strategies) {

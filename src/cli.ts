@@ -57,6 +57,9 @@ Commands:
   mnueron import <file>           Bulk-import a Claude or OpenAI export
        [--ns <name>]              Target namespace (default: "default")
        [--format claude|openai]   Skip format auto-detection
+  mnueron import --claude-desktop Probe + auto-import the local Claude Desktop app
+       [--probe]                  Show what's found without importing
+       [--ns <name>]              Target namespace (default: "claude-desktop")
   mnueron search <query>          Search memories from the terminal
        [--ns <name>] [--k <n>]
   mnueron stats                   Show counts by namespace
@@ -154,8 +157,58 @@ async function cmdSetup(args: string[]) {
 }
 
 async function cmdImport(args: string[]) {
+  // v0.2.5 — `--claude-desktop` mode probes for and auto-imports the
+  // user's locally-installed Claude Desktop export. No positional <file>.
+  if (args.includes('--claude-desktop')) {
+    const { probeClaudeDesktop, autoImport } = await import('./import/claude_desktop.js');
+    const probeOnly = args.includes('--probe') || args.includes('--probe-only');
+    let ns = 'claude-desktop';
+    let dirOverride: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+      else if (args[i] === '--dir' && args[i + 1]) dirOverride = args[++i];
+    }
+    const probe = probeClaudeDesktop();
+    console.log('🧠  Claude Desktop probe');
+    console.log(`    Location: ${probe.path ?? 'NOT FOUND'}`);
+    if (!probe.path) {
+      console.log('    Paths tried:');
+      for (const p of probe.pathsAttempted) console.log(`      - ${p}`);
+    } else {
+      console.log(`    Contents: ${probe.contents.length} entries`);
+    }
+    if (probe.exportCandidates.length > 0) {
+      console.log('    Export candidates:');
+      for (const e of probe.exportCandidates) console.log(`      • ${e}`);
+    }
+    if (probe.hints.length > 0) {
+      console.log('    Notes:');
+      for (const h of probe.hints) console.log(`      ${h}`);
+    }
+    if (probeOnly) {
+      console.log('  (--probe mode — not importing anything)');
+      return;
+    }
+    if (dirOverride) {
+      console.log(`  --dir ${dirOverride}: custom-path import not yet implemented; use Settings → Privacy → Export data.`);
+      return;
+    }
+    try {
+      const provider = makeProvider(loadConfig());
+      const result = await autoImport(provider, ns);
+      await provider.close();
+      console.log(`✓ Imported from ${result.path}`);
+      console.log(`  Saved ${result.saved}, errors ${result.errors}, namespace="${ns}"`);
+    } catch (e) {
+      console.error(`✗ ${(e as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   if (args.length === 0) {
     console.error('Usage: mnueron import <file> [--ns <namespace>] [--format claude|openai]');
+    console.error('       mnueron import --claude-desktop [--probe] [--ns <namespace>]');
     process.exit(1);
   }
   const file = args[0];

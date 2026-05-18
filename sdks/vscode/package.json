@@ -2,7 +2,7 @@
   "name": "mnueron-vscode",
   "displayName": "mnueron \u2014 AI memory",
   "description": "Save, search, and inject memories from mnueron \u2014 works alongside Copilot, Cursor, and Cline.",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "publisher": "mnueron",
   "engines": {
     "vscode": "^1.85.0"

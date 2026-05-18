@@ -1,0 +1,27 @@
+# Source files (we ship compiled ./dist instead)
+src/**
+tsconfig.json
+**/*.map
+
+# Backup folders (any "_backup*" siblings of media/, etc.)
+**/_backup*/**
+**/_backup*
+
+# Install scripts ship as-is for transparency; keep INSTALL.md and install.{ps1,sh}.
+# Comment the next 3 lines if you'd rather strip them from the published VSIX:
+# install.ps1
+# install.sh
+# INSTALL.md
+
+# Dev / CI / tooling
+.vscode/**
+.vscode-test/**
+.github/**
+.gitignore
+.eslintrc*
+node_modules/**
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+*.vsix

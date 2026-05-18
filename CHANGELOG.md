@@ -10,6 +10,24 @@ messages and PR descriptions.
 These are in the repo on `main` but not yet published to npm. The next
 `npm publish` will bundle them as a minor or patch bump.
 
+### Added (P1+P2 — Entity layer)
+- **Entity extraction on save.** When `metadata.extract_entities: true` is
+  set per-call (or `MNUERON_ENABLE_ENTITY_EXTRACTION=true` is exported),
+  the local provider runs Claude Haiku 4.5 (or gpt-4o-mini with BYOK) over
+  the memory content and stamps `metadata.entities = [{name, type, context}]`.
+  Types: person, organization, project, technology, place, decision, event,
+  concept, other. Fail-open: save still succeeds even if extraction errors.
+  Cost: ~$0.001/save at Haiku pricing. No new dependencies — uses raw
+  fetch to keep the CLI install lean.
+- `mnueron extract-entities` — CLI subcommand to retroactively extract
+  entities from existing memories. Flags: `--ns <name>`, `--since <epoch_ms>`,
+  `--limit <n>` (default 100, max 1000), `--force` (re-extract memories
+  that already have entities), `--dry-run`. Requires `ANTHROPIC_API_KEY`
+  or `OPENAI_API_KEY` in the environment.
+- Cross-session entity resolution is hosted-only for v1 — see the
+  `ai-boilerplate-pro` repo's `/api/entities` endpoints. Local SQLite
+  gets the resolution layer in a future release.
+
 ### Added (CLI)
 - `mnueron primer` — emit a CLAUDE.md / cursorrules-style primer that
   tells your AI it has memory tools available and sketches the current

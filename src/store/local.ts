@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 import { embed, embedBatch, EMBEDDING_DIM, preload } from './embeddings.js';
 import { chunkContent, shouldChunk, DEFAULT_CHUNK_THRESHOLD } from './chunking.js';
+import { extractEntities, shouldExtractEntities } from './entity-extractor.js';
 import { redact } from './redactor.js';
 import type {
   Provider, Memory, SaveMemoryInput, SearchInput, ListInput, NamespaceInfo,
@@ -213,7 +214,31 @@ export class LocalProvider implements Provider {
     //    boundaries can't slip through. Single source of truth for what
     //    hits SQLite.
     const transformed = preSaveTransform(input);
-    // 2. Long content gets auto-chunked into multiple memories. Each chunk
+
+    // 2. P1 — entity extraction. SECURITY-CRITICAL: capture and strip BYOK
+    //    keys from metadata BEFORE the gate check, mirroring the hosted
+    //    backend's ordering. Short-content saves with BYOK keys still get
+    //    keys scrubbed even when extraction is skipped.
+    const meta = (transformed.metadata as Record<string, unknown> | undefined) ?? {};
+    const byokAnthropic = typeof meta.byok_anthropic_key === 'string'
+      ? (meta.byok_anthropic_key as string) : undefined;
+    const byokOpenAI = typeof meta.byok_openai_key === 'string'
+      ? (meta.byok_openai_key as string) : undefined;
+    if (byokAnthropic) delete meta.byok_anthropic_key;
+    if (byokOpenAI) delete meta.byok_openai_key;
+    transformed.metadata = meta;
+
+    if (shouldExtractEntities(transformed.content.length, transformed.metadata)) {
+      const entities = await extractEntities(transformed.content, {
+        anthropicKey: byokAnthropic,
+        openaiKey: byokOpenAI,
+      });
+      if (entities.length > 0) {
+        transformed.metadata = { ...(transformed.metadata ?? {}), entities };
+      }
+    }
+
+    // 3. Long content gets auto-chunked into multiple memories. Each chunk
     //    becomes a searchable atomic memory; the original conversation is
     //    linkable via `parent_ref` (= source_ref + chunk_index in metadata).
     if (shouldChunk(transformed.content)) {

@@ -15,6 +15,7 @@ import { loadConfig, makeProvider } from './config.js';
 import { importClaudeExport } from './import/claude.js';
 import { importOpenAIExport } from './import/openai.js';
 import { runSetup, formatReport, type SetupOptions } from './setup.js';
+import { extractEntities } from './store/entity-extractor.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +35,7 @@ async function main() {
     case 'migrate-to-hosted': return cmdMigrateToHosted(rest);
     case 'plugin':       return cmdPlugin(rest);
     case 'primer':       return cmdPrimer(rest);
+    case 'extract-entities': return cmdExtractEntities(rest);
     case 'help':
     case '--help':
     case '-h':
@@ -92,6 +94,13 @@ Commands:
        [--recent <n>]               Sample n most-recent memory titles (default: 12).
        [--out <file>]               Write to file instead of stdout.
        Example: mnueron primer > CLAUDE.md
+  mnueron extract-entities        P2 — retroactively extract entities from existing memories.
+       [--ns <name>]                Restrict to one namespace.
+       [--since <epoch_ms>]         Only memories created on/after this time.
+       [--limit <n>]                Cap how many to process (default 100, max 1000).
+       [--force]                    Re-extract memories that already have entities.
+       [--dry-run]                  Preview without making LLM calls.
+       Requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.
 
 Environment:
   MNUERON_DB_PATH    Local SQLite location (default: ~/.mnueron/memories.db)
@@ -903,6 +912,137 @@ function renderPrimer(input: {
   lines.push('');
 
   return lines.join('\n');
+}
+
+/**
+ * P2.4 — retroactive entity extraction for the local SQLite store.
+ *
+ * For each existing memory:
+ *   1. Skip if metadata.entities already exists (unless --force).
+ *   2. Extract entities via Haiku/OpenAI (whichever env key is set).
+ *   3. Stamp the extracted list into metadata.entities via provider.update().
+ *
+ * Note: this only does P1 (extraction) for local. Cross-session entity
+ * resolution (P2) on local SQLite is deferred — entities here are saved
+ * as standalone lists per-memory without canonical_id linking yet.
+ * Hosted-mode users get the full P1+P2 pipeline via /api/entities/backfill.
+ */
+async function cmdExtractEntities(args: string[]) {
+  let ns: string | undefined;
+  let since: number | undefined;
+  let limit = 100;
+  let force = false;
+  let dryRun = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--ns' && args[i + 1]) ns = args[++i];
+    else if (a === '--since' && args[i + 1]) since = parseInt(args[++i], 10);
+    else if (a === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(1000, v));
+    } else if (a === '--force') force = true;
+    else if (a === '--dry-run') dryRun = true;
+    else if (a === '--help' || a === '-h') {
+      console.log(
+        'Usage: mnueron extract-entities [--ns <name>] [--since <epoch_ms>]\n' +
+          '                                [--limit <n>] [--force] [--dry-run]',
+      );
+      return;
+    }
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+    console.error(
+      'mnueron extract-entities requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.',
+    );
+    process.exit(1);
+  }
+
+  const provider = makeProvider(loadConfig());
+  try {
+    // Pull candidates newest-first. The provider's list() honors namespace
+    // and date filters and returns memories with their metadata.
+    const memories = await provider.list({
+      namespace: ns,
+      created_after: since,
+      limit,
+      offset: 0,
+    });
+
+    if (memories.length === 0) {
+      console.log('No memories matched. Nothing to do.');
+      return;
+    }
+
+    console.log(
+      `Found ${memories.length} candidate memor${memories.length === 1 ? 'y' : 'ies'}${ns ? ` in namespace "${ns}"` : ''}.`,
+    );
+
+    if (dryRun) {
+      let withEntities = 0;
+      for (const m of memories) {
+        const meta = (m.metadata ?? {}) as Record<string, unknown>;
+        if (Array.isArray(meta.entities) && (meta.entities as unknown[]).length > 0) {
+          withEntities += 1;
+        }
+      }
+      console.log(
+        `[dry-run] Would extract for ${memories.length - withEntities} memories ` +
+          `(skipping ${withEntities} that already have entities; pass --force to override).`,
+      );
+      return;
+    }
+
+    let processed = 0;
+    let extracted = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const m of memories) {
+      const meta = (m.metadata ?? {}) as Record<string, unknown>;
+      const hasExisting =
+        Array.isArray(meta.entities) && (meta.entities as unknown[]).length > 0;
+      if (hasExisting && !force) {
+        skipped += 1;
+        process.stdout.write('.');
+        continue;
+      }
+      try {
+        const ents = await extractEntities(m.content, {});
+        processed += 1;
+        if (ents.length === 0) {
+          process.stdout.write('-');
+          continue;
+        }
+        extracted += ents.length;
+        // Merge into existing metadata; overwrite the entities key.
+        await provider.update(m.id, {
+          metadata: { ...meta, entities: ents },
+        });
+        process.stdout.write('+');
+      } catch (e) {
+        errors += 1;
+        process.stdout.write('x');
+        console.warn(
+          '\n[extract-entities] memory',
+          m.id,
+          'failed:',
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
+
+    console.log(
+      `\n\nDone. Processed ${processed}, extracted ${extracted} entities, ` +
+        `skipped ${skipped} (already had entities), errors ${errors}.`,
+    );
+    if (skipped > 0 && !force) {
+      console.log('Tip: pass --force to re-extract memories that already have entities.');
+    }
+  } finally {
+    await provider.close();
+  }
 }
 
 main().catch(e => {

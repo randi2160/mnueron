@@ -35,7 +35,10 @@
     // One-sided result → likely outdated selector. Bail and let the next
     // strategy try a broader sweep.
     if (userNodes.length === 0 || asstNodes.length === 0) {
-      console.warn(`${TAG} strat_testid one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
+      // Soft fail — log at debug so Chrome's chrome://extensions Errors
+      // panel doesn't surface this as a bug. The fallback chain will
+      // try the next strategy.
+      console.debug(`${TAG} strat_testid one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
       return null;
     }
     const all = [
@@ -54,7 +57,7 @@
     const asstNodes = [...document.querySelectorAll(asstSel)];
     if (!userNodes.length && !asstNodes.length) return null;
     if (userNodes.length === 0 || asstNodes.length === 0) {
-      console.warn(`${TAG} strat_fontClass one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
+      console.debug(`${TAG} strat_fontClass one-sided: user=${userNodes.length} assistant=${asstNodes.length} — falling through`);
       return null;
     }
     const combined = [
@@ -82,17 +85,17 @@
     //   - OR every message is shorter than 30 chars (probably just headings)
     //   - OR fewer than 2 distinct messages (real chats have at least one turn)
     if (msgs.length < 2) {
-      console.warn(`${TAG} strat_proseTurns only found ${msgs.length} message — falling through`);
+      console.debug(`${TAG} strat_proseTurns only found ${msgs.length} message — falling through`);
       return null;
     }
     const knownRoles = msgs.filter(m => m.role === 'user' || m.role === 'assistant').length;
     if (knownRoles === 0) {
-      console.warn(`${TAG} strat_proseTurns: all messages role=unknown — falling through`);
+      console.debug(`${TAG} strat_proseTurns: all messages role=unknown — falling through`);
       return null;
     }
     const meaningful = msgs.filter(m => (m.content || '').trim().length >= 30).length;
     if (meaningful === 0) {
-      console.warn(`${TAG} strat_proseTurns: every message < 30 chars (title-only?) — falling through`);
+      console.debug(`${TAG} strat_proseTurns: every message < 30 chars (title-only?) — falling through`);
       return null;
     }
     return msgs;

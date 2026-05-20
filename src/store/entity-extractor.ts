@@ -44,21 +44,22 @@ export const ENTITY_EXTRACTION_ENABLED =
 
 /**
  * Per-call gate. Same shape as hosted-side `shouldExtractEntities`.
+ *
+ * Explicit per-call opt-in (metadata.extract_entities: true OR BYOK key)
+ * always runs, even on short content. The length floor only applies to
+ * the env-var default path, to keep that from burning money on noise.
  */
 export function shouldExtractEntities(
   contentLen: number,
   metadata: Record<string, unknown> | undefined,
   minChars = MIN_LENGTH_CHARS,
 ): boolean {
-  if (contentLen < minChars) return false;
-  if (ENTITY_EXTRACTION_ENABLED) return true;
-  if (!metadata) return false;
-  if (metadata.extract_entities === true) return true;
-  // BYOK keys are an implicit opt-in.
-  const a = metadata.byok_anthropic_key;
+  if (metadata?.extract_entities === true) return true;
+  const a = metadata?.byok_anthropic_key;
   if (typeof a === 'string' && a.length > 0) return true;
-  const o = metadata.byok_openai_key;
+  const o = metadata?.byok_openai_key;
   if (typeof o === 'string' && o.length > 0) return true;
+  if (ENTITY_EXTRACTION_ENABLED && contentLen >= minChars) return true;
   return false;
 }
 

@@ -5,10 +5,18 @@
 const $ = (id) => document.getElementById(id);
 
 const FIELDS = ['local_url', 'hosted_url', 'hosted_token', 'namespace_prefix'];
-const CHECKS = ['auto_capture', 'prefer_hosted', 'ambient_context'];
+// `notifications` is new in the sidebar redesign (May 2026). Defaults to
+// true so existing users start with the friendly notification toast.
+const CHECKS = ['auto_capture', 'prefer_hosted', 'ambient_context', 'notifications'];
 // Single-select dropdowns (separate from text fields so we can populate
 // their <option>s before setting the value).
 const SELECTS = ['ambient_namespace'];
+
+// Settings whose default-true behavior we want when the user has never
+// touched them. Without this, the first paint shows them as unchecked
+// even though the actual runtime behavior is "on". Mirror in background.js
+// when adding new ones.
+const DEFAULT_TRUE_CHECKS = new Set(['notifications']);
 
 // Hard-coded fallbacks shown in the input boxes when settings storage has
 // the field empty. Keep these in sync with DEFAULTS in background.js. Users
@@ -33,12 +41,56 @@ async function load() {
       $(f).value = VISIBLE_FALLBACK[f];
     }
   }
-  for (const f of CHECKS) $(f).checked = !!res.settings[f];
+  for (const f of CHECKS) {
+    const saved = res.settings[f];
+    if (saved === undefined && DEFAULT_TRUE_CHECKS.has(f)) {
+      $(f).checked = true;
+    } else {
+      $(f).checked = !!saved;
+    }
+  }
 
   // Load namespace list from the configured backend so the dropdown shows
   // real choices instead of "type a name". Non-blocking; if the backend is
   // unreachable we just leave the dropdown at "All namespaces".
   void loadNamespaceOptions(res.settings.ambient_namespace || '');
+
+  // Auto-test the connection on load so the user lands on a state
+  // they can trust ("Connected" pill or "Not connected" pill) without
+  // having to click Test connection. Non-blocking.
+  void refreshConnectionPill();
+}
+
+// ─── Connection-status pill ──────────────────────────────────────────────
+// Replaces the old toast for the common "is my token working" check.
+// Pings the backend and either fills the green pill or hides it.
+async function refreshConnectionPill() {
+  const pill = $('connection-pill');
+  if (!pill) return;
+  const text = $('connection-text');
+
+  pill.className = 'status-pill checking';
+  pill.classList.remove('hidden');
+  if (text) text.textContent = 'Checking connection…';
+
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'mnueron:ping' });
+    if (res?.status?.ok) {
+      pill.className = 'status-pill';
+      if (text) text.textContent = 'Connected successfully';
+    } else {
+      pill.className = 'status-pill err';
+      if (text) {
+        text.textContent =
+          res?.status?.error
+            ? `Not connected — ${res.status.error}`
+            : 'Not connected — check your token';
+      }
+    }
+  } catch (e) {
+    pill.className = 'status-pill err';
+    if (text) text.textContent = `Connection check failed: ${e?.message ?? e}`;
+  }
 }
 
 async function loadNamespaceOptions(selectedValue) {
@@ -214,7 +266,55 @@ async function resetBackfill() {
 }
 
 $('save').addEventListener('click', save);
-$('test').addEventListener('click', testConnection);
+$('test').addEventListener('click', () => {
+  // The new design has both a Test button AND the live status pill.
+  // Run both so the user sees instant feedback either way.
+  testConnection();
+  void refreshConnectionPill();
+});
 $('migrate').addEventListener('click', migrate);
 $('reset-backfill').addEventListener('click', resetBackfill);
+
+// ─── Sidebar nav: swap the active .page block on click ────────────────────
+// One click handler delegated to the navlist container.
+document.getElementById('navlist').addEventListener('click', (e) => {
+  const btn = e.target.closest('.nav-btn');
+  if (!btn) return;
+  const target = btn.dataset.page;
+  if (!target) return;
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.page').forEach((p) => {
+    p.classList.toggle('active', p.id === `page-${target}`);
+  });
+  // Scroll the content pane to top on section change so long forms don't
+  // start in the middle.
+  document.querySelector('.content')?.scrollTo({ top: 0, behavior: 'instant' });
+});
+
+// ─── Show/hide API token via the eye icon ────────────────────────────────
+document.getElementById('toggle-token-visibility')?.addEventListener('click', () => {
+  const inp = $('hosted_token');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+
+// ─── Re-check connection when the user pastes a new token ────────────────
+// Debounced — wait until they stop typing for 800ms so we don't spam the
+// backend on every keystroke.
+let _connRecheckTimer = null;
+$('hosted_token')?.addEventListener('input', () => {
+  clearTimeout(_connRecheckTimer);
+  _connRecheckTimer = setTimeout(() => {
+    void refreshConnectionPill();
+  }, 800);
+});
+
+// ─── About page: fill version + commit info from the manifest ────────────
+try {
+  const m = chrome.runtime.getManifest();
+  const v = document.getElementById('about-version');
+  if (v && m?.version) v.textContent = `v${m.version}`;
+} catch {
+  /* getManifest is sync + reliable, but fail-soft anyway */
+}
+
 load();

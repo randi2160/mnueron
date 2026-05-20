@@ -1,192 +1,633 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>mnueron — settings</title>
+<title>mnueron — Settings</title>
+<!--
+  Sidebar-layout settings page. Five sections:
+    General     — API token + global behavior toggles (most common edits)
+    Connection  — local vs hosted URLs + which to prefer
+    Backfill    — namespace prefix + clear backfill cache + migrate
+    Shortcuts   — keyboard shortcut quick reference + Chrome's shortcuts page
+    About       — version + links to docs / GitHub / help
+
+  All input IDs match the legacy options.js wiring so no JS rewrite is
+  needed. The new ones (notifications) are additive.
+-->
 <style>
+  /* ─── Reset + brand tokens ──────────────────────────────────────── */
   * { box-sizing: border-box; }
-  body {
-    margin: 0;
+  :root {
+    --bg:           #0b0d12;
+    --bg-2:         #0f1218;
+    --panel:        #131720;
+    --panel-2:      #181d28;
+    --border:       #1e2330;
+    --border-2:     #262d3d;
+    --text:         #e7eaf2;
+    --text-dim:     #8a92a6;
+    --text-faint:   #6c7488;
+    --brand:        #6e3aff;
+    --brand-2:      #5b2cff;
+    --ok:           #36d399;
+    --ok-bg:        rgba(54, 211, 153, 0.10);
+    --err:          #ff6b80;
+    --err-bg:       rgba(255, 107, 128, 0.10);
+  }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
     font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: #0f1115;
-    color: #d6dae3;
-    padding: 36px 20px;
   }
-  .container {
-    max-width: 640px;
-    margin: 0 auto;
-  }
-  h1 { margin: 0 0 6px; font-size: 22px; color: #fff; }
-  .sub { color: #8a92a6; margin: 0 0 28px; font-size: 13px; }
 
-  fieldset {
-    border: 1px solid #1f2330;
-    border-radius: 10px;
-    padding: 18px 18px 8px;
+  /* ─── App shell: sidebar + content ──────────────────────────────── */
+  .app {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ─── Sidebar ───────────────────────────────────────────────────── */
+  .sidebar {
+    background: var(--bg-2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 18px 14px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px 18px;
+  }
+  .brand img { width: 28px; height: 28px; border-radius: 6px; }
+  .brand .name {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.01em;
+  }
+  .brand .tag {
+    padding: 0 8px 14px;
+    font-size: 11px;
+    color: var(--text-faint);
+    line-height: 1.3;
+  }
+  .navlist {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .nav-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .nav-btn:hover { background: var(--panel); color: var(--text); }
+  .nav-btn.active {
+    background: rgba(110, 58, 255, 0.18);
+    color: #fff;
+  }
+  .nav-btn .ico {
+    width: 16px; height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
+  }
+  .sidebar .spacer { flex: 1; }
+  .help-link {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .help-link:hover { color: var(--text); background: var(--panel); }
+
+  /* ─── Main content ──────────────────────────────────────────────── */
+  .content { padding: 40px 48px; max-width: 820px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  h1 {
+    margin: 0 0 4px;
+    font-size: 24px;
+    color: #fff;
+    letter-spacing: -0.01em;
+  }
+  .page-sub {
+    margin: 0 0 28px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    color: #fff;
+    letter-spacing: -0.005em;
+  }
+  .card-sub {
     margin: 0 0 18px;
-    background: #11141c;
+    color: var(--text-dim);
+    font-size: 12.5px;
   }
-  legend { padding: 0 8px; color: #c4cad6; font-size: 13px; }
 
-  label {
+  /* ─── Form controls ─────────────────────────────────────────────── */
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .field-label {
     display: block;
     font-size: 12px;
-    color: #8a92a6;
-    margin: 0 0 5px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    margin: 0 0 6px;
+    font-weight: 500;
   }
-  .field { margin-bottom: 14px; }
-  input[type=text], input[type=url], input[type=password] {
+
+  .input-wrap { position: relative; }
+  input[type=text], input[type=url], input[type=password], select {
     width: 100%;
-    background: #0a0c10;
-    border: 1px solid #232938;
-    border-radius: 6px;
-    padding: 9px 12px;
-    color: #fff;
-    font: inherit;
-    outline: none;
-  }
-  input:focus { border-color: #3a5cf0; }
-
-  .row {
-    display: flex; align-items: center; gap: 10px;
-    margin: 8px 0;
-  }
-  .row label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; color: #d6dae3; }
-
-  .actions { display: flex; gap: 10px; margin-top: 20px; }
-  button {
-    padding: 9px 16px;
+    background: var(--bg);
+    border: 1px solid var(--border-2);
     border-radius: 8px;
-    border: 1px solid #3a5cf0;
-    background: #3a5cf0;
+    padding: 10px 13px;
     color: #fff;
     font: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  input:focus, select:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(110, 58, 255, 0.18);
+  }
+  .input-wrap.has-icon input { padding-right: 38px; }
+  .input-eye {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    padding: 4px;
+    line-height: 0;
+  }
+  .input-eye:hover { color: var(--text); }
+
+  .hint {
+    margin: 6px 0 0;
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .hint code {
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #c7c0ff;
+    font-size: 11px;
+  }
+
+  /* ─── Status pill (Connected/Not connected) ─────────────────────── */
+  .status-pill {
+    margin-top: 12px;
+    padding: 10px 13px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--ok-bg);
+    color: var(--ok);
+    border: 1px solid rgba(54, 211, 153, 0.25);
+  }
+  .status-pill.err {
+    background: var(--err-bg);
+    color: var(--err);
+    border-color: rgba(255, 107, 128, 0.25);
+  }
+  .status-pill.checking {
+    background: var(--panel-2);
+    color: var(--text-dim);
+    border-color: var(--border-2);
+  }
+  .status-pill.hidden { display: none; }
+  .status-pill .check-ico {
+    width: 14px; height: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* ─── Checkbox rows ─────────────────────────────────────────────── */
+  .check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 10px 0;
+  }
+  .check-row input[type=checkbox] {
+    accent-color: var(--brand);
+    width: 16px; height: 16px;
+    margin-top: 2px;
     cursor: pointer;
   }
-  button:hover { background: #4a6bff; }
-  button.secondary {
-    background: #1d2230;
-    border-color: #232938;
-    color: #d6dae3;
-  }
-  button.secondary:hover { background: #232938; }
-
-  .toast {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border-radius: 6px;
+  .check-row label {
+    flex: 1;
     font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .check-row .sub {
+    display: block;
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .info-mark {
+    width: 14px; height: 14px;
+    color: var(--text-faint);
+    cursor: help;
+  }
+
+  /* ─── Buttons ───────────────────────────────────────────────────── */
+  .btn {
+    appearance: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, border-color 0.12s, transform 0.05s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+  }
+  .btn-primary:hover { background: #7d4cff; border-color: #7d4cff; }
+  .btn-secondary {
+    background: var(--panel-2);
+    border-color: var(--border-2);
+    color: var(--text);
+  }
+  .btn-secondary:hover { background: #20273a; border-color: #2f3850; }
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--border-2);
+    color: var(--text-dim);
+  }
+  .btn-ghost:hover { background: var(--panel); color: var(--text); }
+  .btn-row {
+    display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap;
+  }
+
+  /* ─── Toast at bottom of card ───────────────────────────────────── */
+  .toast {
+    margin-top: 14px;
+    padding: 10px 13px;
+    border-radius: 8px;
+    font-size: 12.5px;
     display: none;
   }
   .toast.show { display: block; }
-  .toast.ok  { background: #15301f; color: #a6ffc4; border: 1px solid #2a5a3a; }
-  .toast.err { background: #2a151b; color: #ffa6b0; border: 1px solid #5a2530; }
+  .toast.ok  { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(54,211,153,0.25); }
+  .toast.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(255,107,128,0.25); }
 
-  small { color: #6c7488; }
+  /* ─── Shortcuts table ───────────────────────────────────────────── */
+  .kbd-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .kbd-row:last-child { border-bottom: none; }
+  .kbd-keys { display: flex; gap: 4px; }
+  .kbd {
+    display: inline-block;
+    background: var(--bg);
+    border: 1px solid var(--border-2);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font: 11.5px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color: #fff;
+  }
+
+  /* ─── About list ────────────────────────────────────────────────── */
+  .about-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .about-row:last-child { border-bottom: none; }
+  .about-row .label { color: var(--text-dim); font-size: 12.5px; }
+  .about-row .value { color: var(--text); font-size: 13px; }
+  .about-row a { color: #b6a0ff; text-decoration: none; }
+  .about-row a:hover { text-decoration: underline; }
+
+  /* ─── Progress bar (used by Backfill + Migrate) ─────────────────── */
+  .progress-shell {
+    background: var(--border);
+    height: 6px; border-radius: 3px; margin-top: 8px; overflow: hidden;
+  }
+  .progress-bar {
+    background: var(--brand);
+    height: 100%; width: 0%;
+    transition: width 0.2s ease;
+  }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>mnueron settings</h1>
-  <p class="sub">Where the extension sends captured chats, and which sites it captures from.</p>
+<div class="app">
+  <!-- ─── Sidebar nav ──────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="icons/icon-48.png" alt="" />
+      <span class="name">mnueron</span>
+    </div>
+    <div class="tag">AI memory for your conversations</div>
 
-  <fieldset>
-    <legend>Local backend</legend>
-    <div class="field">
-      <label>Local mnueron URL</label>
-      <input type="url" id="local_url" placeholder="http://localhost:3122" />
-      <small>Default <code>http://localhost:3122</code>. Run <code>mnueron dashboard</code> in a terminal to start it.</small>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Hosted backend (optional)</legend>
-    <div class="field">
-      <label>Hosted URL</label>
-      <input type="url" id="hosted_url" placeholder="https://mnueron.com" />
-      <small>Default <code>https://mnueron.com</code>. Override only if you self-host the backend.</small>
-    </div>
-    <div class="field">
-      <label>Bearer token</label>
-      <input type="password" id="hosted_token" placeholder="mnu_…" />
-    </div>
-    <div class="row">
-      <input type="checkbox" id="prefer_hosted" />
-      <label for="prefer_hosted">Use hosted backend instead of local</label>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Capture behavior</legend>
-    <div class="field">
-      <label>Namespace prefix</label>
-      <input type="text" id="namespace_prefix" placeholder="web" />
-      <small>Memories save under <code>&lt;prefix&gt;-&lt;site&gt;</code>, e.g. <code>web-claude</code>.</small>
-    </div>
-    <div class="row">
-      <input type="checkbox" id="auto_capture" />
-      <label for="auto_capture">Auto-capture chats in the background (experimental)</label>
-    </div>
-    <div class="row">
-      <input type="checkbox" id="ambient_context" />
-      <label for="ambient_context">
-        Ambient context — as you type in chat, surface related memories from
-        your store in a small floating pill near the input.
-      </label>
-    </div>
-    <div class="field" style="margin-top:10px;">
-      <label>Ambient search scope</label>
-      <select
-        id="ambient_namespace"
-        style="width:100%; background:#0a0c10; border:1px solid #232938; border-radius:6px; padding:9px 12px; color:#fff; font:inherit;"
-      >
-        <option value="">All namespaces</option>
-      </select>
-      <small>Scope ambient suggestions to one namespace. List loads from your backend; click <strong>Test connection</strong> if it&apos;s empty.</small>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Re-import backfilled chats</legend>
-    <p style="margin: 0 0 10px; color: #8a92a6; font-size: 12px;">
-      Clears the &quot;already imported&quot; cache so the next <strong>Backfill</strong>
-      pulls every Claude chat through the latest scraper. Useful when the
-      scraper has been improved (e.g., extra assistant content now extractable).
-      The hosted backend dedupes by <code>source_ref</code>, so re-importing
-      <em>updates</em> existing memories rather than duplicating them.
-    </p>
-    <div class="actions" style="margin-top: 0;">
-      <button id="reset-backfill" class="secondary" style="border-color:#5b2cff;color:#cab9ff;">
-        Clear backfill cache
+    <nav class="navlist" id="navlist">
+      <button class="nav-btn active" data-page="general">
+        <span class="ico" aria-hidden="true">
+          <!-- gear -->
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M13.5 8a5.5 5.5 0 0 0-.07-.86l1.45-1.13-1.5-2.6-1.7.68a5.5 5.5 0 0 0-1.49-.86L9.93 1.4h-3l-.26 1.83a5.5 5.5 0 0 0-1.49.86l-1.7-.68-1.5 2.6L3.43 7.14a5.5 5.5 0 0 0 0 1.72L1.98 9.99l1.5 2.6 1.7-.68a5.5 5.5 0 0 0 1.49.86l.26 1.83h3l.26-1.83a5.5 5.5 0 0 0 1.49-.86l1.7.68 1.5-2.6-1.45-1.13c.04-.28.07-.57.07-.86z"/></svg>
+        </span>
+        General
       </button>
-    </div>
-  </fieldset>
+      <button class="nav-btn" data-page="connection">
+        <span class="ico" aria-hidden="true">
+          <!-- plug -->
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l-3-3"/><path d="M11 9l-4 4-1.5-1.5L8 9.5"/><path d="M5.5 11.5l-3 3"/><path d="M11.5 5.5l-3 3"/></svg>
+        </span>
+        Connection
+      </button>
+      <button class="nav-btn" data-page="backfill">
+        <span class="ico" aria-hidden="true">
+          <!-- clock arrow -->
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1"/></svg>
+        </span>
+        Backfill
+      </button>
+      <button class="nav-btn" data-page="shortcuts">
+        <span class="ico" aria-hidden="true">
+          <!-- keyboard -->
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5"/><path d="M4 7h.01M7 7h.01M10 7h.01M13 7h.01M5 10h6"/></svg>
+        </span>
+        Shortcuts
+      </button>
+      <button class="nav-btn" data-page="about">
+        <span class="ico" aria-hidden="true">
+          <!-- info -->
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 11V7M8 5h.01"/></svg>
+        </span>
+        About
+      </button>
+    </nav>
 
-  <fieldset>
-    <legend>Migrate local → hosted</legend>
-    <p style="margin: 0 0 10px; color: #8a92a6; font-size: 12px;">
-      Copy every memory in your local mnueron store up to the hosted account
-      configured above. Idempotent — re-running won&apos;t duplicate memories
-      (existing source_ref values are deduped server-side).
-    </p>
-    <div class="actions" style="margin-top: 0;">
-      <button id="migrate" class="secondary" style="border-color:#5b2cff;color:#cab9ff;">Migrate now</button>
-    </div>
-    <div id="migrate-progress" style="display:none; margin-top:12px; font-size:12px; color:#8a92a6">
-      <div id="migrate-line">Starting…</div>
-      <div style="background:#1d2230; height:6px; border-radius:3px; margin-top:6px; overflow:hidden">
-        <div id="migrate-bar" style="background:#5b2cff; height:100%; width:0%; transition:width .2s"></div>
+    <div class="spacer"></div>
+    <a class="help-link" href="https://www.mnueron.com/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 11v.01M6.5 6a1.5 1.5 0 0 1 3 0c0 .8-1 1.2-1.5 2"/></svg>
+      Help &amp; support
+      <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left:auto"><path d="M6 3h7v7M13 3l-8 8"/></svg>
+    </a>
+  </aside>
+
+  <!-- ─── Main content (one .page is .active at a time) ────────── -->
+  <main class="content">
+    <!-- ─── General ─────────────────────────────────────────────── -->
+    <section class="page active" id="page-general">
+      <h1>General</h1>
+      <p class="page-sub">Configure your API token and extension behavior.</p>
+
+      <div class="card">
+        <h2>API Configuration</h2>
+        <p class="card-sub">Enter your API token from mnueron.com to connect the extension.</p>
+
+        <div class="field">
+          <label class="field-label" for="hosted_token">API Token</label>
+          <div class="input-wrap has-icon">
+            <input type="password" id="hosted_token" autocomplete="off" placeholder="mnu_…" />
+            <button class="input-eye" id="toggle-token-visibility" type="button" title="Show / hide">
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>
+            </button>
+          </div>
+          <div class="status-pill hidden" id="connection-pill">
+            <span class="check-ico">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l3.5 3.5L13 5"/></svg>
+            </span>
+            <span id="connection-text">Connected successfully</span>
+          </div>
+          <p class="hint">Your token is stored securely and never shared.</p>
+        </div>
       </div>
-    </div>
-  </fieldset>
 
-  <div class="actions">
-    <button id="save">Save</button>
-    <button class="secondary" id="test">Test connection</button>
-  </div>
-  <div class="toast" id="toast"></div>
+      <div class="card">
+        <h2>Behavior</h2>
+        <div class="check-row">
+          <input type="checkbox" id="notifications" />
+          <label for="notifications">
+            Show notification when capture is complete
+          </label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="auto_capture" />
+          <label for="auto_capture">
+            Auto-capture new chats
+            <span class="sub">When enabled, every new conversation on supported sites is captured automatically. You can pause from the popup.</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="save">Save changes</button>
+        <button class="btn btn-secondary" id="test">Test connection</button>
+      </div>
+      <div class="toast" id="toast"></div>
+    </section>
+
+    <!-- ─── Connection ──────────────────────────────────────────── -->
+    <section class="page" id="page-connection">
+      <h1>Connection</h1>
+      <p class="page-sub">Where the extension sends captured chats.</p>
+
+      <div class="card">
+        <h2>Local backend</h2>
+        <p class="card-sub">Run <code>mnueron dashboard</code> on your machine to start it.</p>
+        <div class="field">
+          <label class="field-label" for="local_url">Local mnueron URL</label>
+          <input type="url" id="local_url" placeholder="http://localhost:3122" />
+          <p class="hint">Default <code>http://localhost:3122</code>.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Hosted backend</h2>
+        <p class="card-sub">Use the mnueron.com hosted service instead of (or alongside) local.</p>
+        <div class="field">
+          <label class="field-label" for="hosted_url">Hosted URL</label>
+          <input type="url" id="hosted_url" placeholder="https://mnueron.com" />
+          <p class="hint">Default <code>https://mnueron.com</code>. Override only for self-hosted.</p>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="prefer_hosted" />
+          <label for="prefer_hosted">Use hosted backend instead of local</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Ambient context</h2>
+        <p class="card-sub">Surface related memories from your store while you type.</p>
+        <div class="check-row">
+          <input type="checkbox" id="ambient_context" />
+          <label for="ambient_context">
+            Enable ambient context pill
+            <span class="sub">Floats above the chat input when relevant past memories exist.</span>
+          </label>
+        </div>
+        <div class="field">
+          <label class="field-label" for="ambient_namespace">Ambient search scope</label>
+          <select id="ambient_namespace">
+            <option value="">All namespaces</option>
+          </select>
+          <p class="hint">Scope ambient suggestions to one namespace. Click Test connection (General) if empty.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Backfill ────────────────────────────────────────────── -->
+    <section class="page" id="page-backfill">
+      <h1>Backfill</h1>
+      <p class="page-sub">Import past chats and migrate between backends.</p>
+
+      <div class="card">
+        <h2>Namespace prefix</h2>
+        <p class="card-sub">Captured memories save under <code>&lt;prefix&gt;-&lt;site&gt;</code> (e.g. <code>web-claude</code>).</p>
+        <div class="field">
+          <input type="text" id="namespace_prefix" placeholder="web" />
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Re-import backfilled chats</h2>
+        <p class="card-sub">
+          Clears the "already imported" cache so the next Backfill pulls every Claude chat through the latest scraper.
+          The hosted backend dedupes by <code>source_ref</code>, so re-importing updates memories instead of duplicating them.
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="reset-backfill">Clear backfill cache</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Migrate local → hosted</h2>
+        <p class="card-sub">
+          Copy every memory from your local mnueron store to the hosted account.
+          Idempotent — existing source_refs are deduped server-side.
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="migrate">Migrate now</button>
+        </div>
+        <div id="migrate-progress" style="display:none; margin-top:14px; font-size:12px; color:var(--text-dim)">
+          <div id="migrate-line">Starting…</div>
+          <div class="progress-shell"><div class="progress-bar" id="migrate-bar"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Shortcuts ───────────────────────────────────────────── -->
+    <section class="page" id="page-shortcuts">
+      <h1>Shortcuts</h1>
+      <p class="page-sub">Keyboard shortcuts for the extension. Edit in Chrome's extensions settings.</p>
+
+      <div class="card">
+        <div class="kbd-row">
+          <span>Open the mnueron popup</span>
+          <span class="kbd-keys"><span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">M</span></span>
+        </div>
+        <div class="kbd-row">
+          <span>Capture this chat (on supported site)</span>
+          <span class="kbd-keys"><span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">S</span></span>
+        </div>
+        <div class="kbd-row">
+          <span>Focus recall search in popup</span>
+          <span class="kbd-keys"><span class="kbd">/</span></span>
+        </div>
+        <div class="btn-row" style="margin-top:18px">
+          <a class="btn btn-secondary" href="chrome://extensions/shortcuts" target="_blank" rel="noopener">
+            Edit shortcuts in Chrome
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── About ───────────────────────────────────────────────── -->
+    <section class="page" id="page-about">
+      <h1>About</h1>
+      <p class="page-sub">Build info and useful links.</p>
+
+      <div class="card">
+        <div class="about-row">
+          <span class="label">Version</span>
+          <span class="value" id="about-version">—</span>
+        </div>
+        <div class="about-row">
+          <span class="label">Homepage</span>
+          <span class="value"><a href="https://www.mnueron.com" target="_blank" rel="noopener">mnueron.com ↗</a></span>
+        </div>
+        <div class="about-row">
+          <span class="label">Documentation</span>
+          <span class="value"><a href="https://www.mnueron.com/docs" target="_blank" rel="noopener">/docs ↗</a></span>
+        </div>
+        <div class="about-row">
+          <span class="label">Source code</span>
+          <span class="value"><a href="https://github.com/randi2160/mnueron" target="_blank" rel="noopener">GitHub ↗</a></span>
+        </div>
+        <div class="about-row">
+          <span class="label">Privacy policy</span>
+          <span class="value"><a href="https://www.mnueron.com/privacy" target="_blank" rel="noopener">/privacy ↗</a></span>
+        </div>
+        <div class="about-row">
+          <span class="label">Support</span>
+          <span class="value"><a href="mailto:support@mnueron.com">support@mnueron.com</a></span>
+        </div>
+      </div>
+    </section>
+  </main>
 </div>
 
 <script src="options.js"></script>

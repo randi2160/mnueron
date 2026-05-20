@@ -960,6 +960,13 @@ async function cmdExtractEntities(args: string[]) {
   }
 
   const provider = makeProvider(loadConfig());
+  // update() is optional on the Provider interface — bail early with a
+  // clear error so TypeScript narrows it for the rest of this function.
+  if (typeof provider.update !== 'function') {
+    console.error('This provider does not support memory.update — cannot persist extracted entities.');
+    process.exit(1);
+  }
+  const updateFn = provider.update.bind(provider);
   try {
     // Pull candidates newest-first. The provider's list() honors namespace
     // and date filters and returns memories with their metadata.
@@ -1017,7 +1024,7 @@ async function cmdExtractEntities(args: string[]) {
         }
         extracted += ents.length;
         // Merge into existing metadata; overwrite the entities key.
-        await provider.update(m.id, {
+        await updateFn(m.id, {
           metadata: { ...meta, entities: ents },
         });
         process.stdout.write('+');
@@ -1033,19 +1040,17 @@ async function cmdExtractEntities(args: string[]) {
       }
     }
 
+    process.stdout.write('\n');
     console.log(
-      `\n\nDone. Processed ${processed}, extracted ${extracted} entities, ` +
-        `skipped ${skipped} (already had entities), errors ${errors}.`,
+      `extract-entities done — extracted=${extracted} processed=${processed} skipped=${skipped} errors=${errors}`,
     );
-    if (skipped > 0 && !force) {
-      console.log('Tip: pass --force to re-extract memories that already have entities.');
-    }
-  } finally {
-    await provider.close();
+  } catch (e) {
+    console.error('extract-entities failed:', e);
+    process.exit(1);
   }
 }
 
-main().catch(e => {
+main().catch((e) => {
   console.error(e?.stack ?? e);
   process.exit(1);
 });

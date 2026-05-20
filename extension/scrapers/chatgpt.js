@@ -24,7 +24,13 @@
     const haveUser = out.some(m => m.role === 'user');
     const haveAsst = out.some(m => m.role === 'assistant');
     if (!haveUser || !haveAsst) {
-      console.warn(`${TAG} strat_authorRole one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
+      // Soft fail — strategy didn't see both sides yet (e.g. assistant
+      // is still streaming, or DOM hadn't fully rendered when we ran).
+      // We bail so the next strategy can try. console.debug instead of
+      // console.warn so this doesn't show up in chrome://extensions
+      // Errors panel — Chrome treats warn as an error there, and these
+      // "falling through" cases are normal flow, not bugs.
+      console.debug(`${TAG} strat_authorRole one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
       return null;
     }
     return out;
@@ -48,7 +54,8 @@
     const haveUser = out.some(m => m.role === 'user');
     const haveAsst = out.some(m => m.role === 'assistant');
     if (!haveUser || !haveAsst) {
-      console.warn(`${TAG} strat_markdown one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
+      // Same soft-fail reasoning as strat_authorRole.
+      console.debug(`${TAG} strat_markdown one-sided: user=${haveUser} asst=${haveAsst} — falling through`);
       return null;
     }
     return out;
@@ -110,9 +117,14 @@
           };
         }
       } catch (e) {
+        // A thrown exception IS a real bug — keep this as warn so it
+        // surfaces in chrome://extensions Errors for debugging.
         console.warn(`${TAG} strategy "${name}" threw:`, e);
       }
     }
+    // All three strategies returned null. This is the only case where
+    // the user actually loses data — keep as warn so it shows up if
+    // ChatGPT changes their DOM and we need to ship a fix.
     console.warn(`${TAG} no strategy matched`);
     return { site: 'chatgpt', url: location.href, title: getTitle(), captured_at: Date.now(), messages: [] };
   }

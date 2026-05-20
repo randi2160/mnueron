@@ -229,9 +229,19 @@ export class LocalProvider implements Provider {
     transformed.metadata = meta;
 
     if (shouldExtractEntities(transformed.content.length, transformed.metadata)) {
+      // Explicit opt-in (metadata.extract_entities or BYOK) bypasses the
+      // 200-char min-length floor. Otherwise (env-var default path) the
+      // floor still applies as a guardrail against burning money on
+      // one-liner autosaves.
+      const meta = transformed.metadata as Record<string, unknown> | undefined;
+      const explicit =
+        meta?.extract_entities === true ||
+        (typeof byokAnthropic === 'string' && byokAnthropic.length > 0) ||
+        (typeof byokOpenAI === 'string' && byokOpenAI.length > 0);
       const entities = await extractEntities(transformed.content, {
         anthropicKey: byokAnthropic,
         openaiKey: byokOpenAI,
+        ...(explicit ? { minChars: 1 } : {}),
       });
       if (entities.length > 0) {
         transformed.metadata = { ...(transformed.metadata ?? {}), entities };

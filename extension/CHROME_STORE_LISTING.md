@@ -15,7 +15,7 @@ listing so the next submission is one diff away from ready.
 | **Category** | Productivity |
 | **Language** | English (United States) |
 | **Homepage URL** | https://mnueron.com |
-| **Support email** | hello@mnueron.com |
+| **Support email** | support@mnueron.com |
 | **Privacy policy URL** | https://mnueron.com/privacy |
 
 ---

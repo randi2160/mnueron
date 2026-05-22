@@ -178,6 +178,112 @@ mnueron import ~/Downloads/conversations.json --ns my-project
 Auto-detects Claude vs OpenAI format. Each conversation becomes a searchable
 memory tagged `imported`.
 
+### Import your Claude Cowork sessions
+
+If you use Claude's "Cowork" mode (the desktop app's local agent mode), every
+chat is already on disk as a JSONL transcript. mnueron can find and import
+all of them with no export step.
+
+#### CLI — one-shot import
+
+```bash
+# See what would be imported without saving anything
+mnueron import --claude-cowork --probe
+
+# Import every Cowork session into the default namespace ("claude-cowork")
+mnueron import --claude-cowork
+
+# Import into a custom namespace (e.g. group with one of your projects)
+mnueron import --claude-cowork --ns elevizio
+
+# Only import the 10 most recent Cowork sessions
+mnueron import --claude-cowork --limit 10 --ns elevizio
+
+# Parse everything but do NOT save — useful to confirm the parse is clean
+mnueron import --claude-cowork --dry-run
+```
+
+Re-runs are safe: each session is upserted by `source_ref="cowork:<sessionId>"`,
+so importing twice just refreshes any sessions whose transcripts have changed.
+
+Where mnueron looks for transcripts:
+
+| OS | Paths scanned |
+|---|---|
+| Windows (regular install) | `%APPDATA%\Claude\local-agent-mode-sessions\` |
+| Windows (Microsoft Store install) | `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\local-agent-mode-sessions\` |
+| macOS | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
+| Linux | `~/.config/Claude/local-agent-mode-sessions/` |
+| All | `~/.claude/projects/` (regular Claude Code) |
+
+Each Cowork session becomes one memory. The chunker then splits long
+transcripts per-turn so search returns the specific exchange, not the whole
+6000-message session.
+
+#### CLI — background watcher
+
+Long-running mode: keeps Cowork in step with mnueron memory by re-importing
+any session whose transcript file changes.
+
+```bash
+# Default: poll every 5 minutes, save into the "claude-cowork" namespace,
+# run forever (Ctrl+C to stop).
+mnueron watch --claude-cowork
+
+# Custom interval (poll every 2 minutes) and namespace
+mnueron watch --claude-cowork --interval 2 --ns elevizio
+
+# Run exactly one sync tick and exit — useful for cron / Task Scheduler
+mnueron watch --claude-cowork --once
+```
+
+The watcher persists last-synced mtimes per session at
+`~/.mnueron/cowork-sync.json`, so restarting it doesn't re-import everything.
+
+#### Dashboard — one-click import
+
+```bash
+# Open the dashboard at localhost:3122 in your browser
+mnueron dashboard
+```
+
+Then click the **Import Cowork** button in the toolbar (next to the existing
+**Import…** button). You'll get a confirmation showing the session and
+message count before the import runs.
+
+#### MCP — trigger from inside any Claude session
+
+mnueron's MCP server exposes a `memory_import_cowork` tool. Once mnueron is
+wired into Claude Desktop / Claude Code (`mnueron setup`), just say:
+
+> "Import my cowork chats."
+
+Claude will call the tool with sensible defaults. To pass specific options:
+
+> "Use the `memory_import_cowork` tool with `namespace="elevizio"` and `limit=5`."
+
+The tool accepts:
+- `namespace` (string, default `"claude-cowork"`) — where to save the memories
+- `limit` (number, optional) — cap how many sessions to import in this call
+- `probe_only` (boolean, default `false`) — report what would be imported, don't save
+
+#### Daily scheduled task
+
+The Claude desktop app's scheduled-tasks feature can run the import on a
+cron. Example: every weekday at 7am.
+
+- Cron expression: `0 7 * * 1-5`
+- Prompt for the scheduled task:
+
+  ```
+  Run the daily mnueron Cowork sync by calling the memory_import_cowork
+  MCP tool with no arguments. Report a one-line digest of saved chunks
+  vs total sessions.
+  ```
+
+This runs while the Claude app is open; if it's closed when the task is
+due, it fires on next launch.
+
 ## Use it in your apps (Python)
 
 ```bash

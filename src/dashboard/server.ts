@@ -16,6 +16,8 @@ import { randomUUID } from 'node:crypto';
 import type { Provider } from '../store/provider.js';
 import { importClaudeExport } from '../import/claude.js';
 import { importOpenAIExport } from '../import/openai.js';
+import { probeClaudeCowork, importFromCoworkSession } from '../import/claude_cowork.js';
+import type { SaveMemoryInput } from '../store/provider.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // dist/dashboard/server.js → ../../dashboard
@@ -252,6 +254,95 @@ async function route(p: Provider, req: IncomingMessage, res: ServerResponse) {
       return sendJson(res, 500, { error: e?.message ?? String(e) });
     } finally {
       await unlink(tmp).catch(() => {});
+    }
+  }
+
+  // GET /api/import/claude-cowork  — probe only (no save)
+  if (method === 'GET' && path === '/api/import/claude-cowork') {
+    const probe = probeClaudeCowork();
+    return sendJson(res, 200, {
+      found: probe.found,
+      scanned_roots: probe.scannedRoots,
+      paths_attempted: probe.pathsAttempted,
+      hints: probe.hints,
+      sessions: probe.sessions.map((s) => ({
+        session_id: s.sessionId,
+        title: s.title ?? null,
+        cwd: s.cwd,
+        message_count: s.messageCount,
+        size_bytes: s.sizeBytes,
+        mtime_ms: s.mtimeMs,
+      })),
+    });
+  }
+
+  // POST /api/import/claude-cowork  — run the import
+  //   body (all optional): { namespace?: string, limit?: number, dry_run?: boolean }
+  if (method === 'POST' && path === '/api/import/claude-cowork') {
+    const body = await readBody(req);
+    let parsed: any = {};
+    if (body.trim()) {
+      try { parsed = JSON.parse(body); }
+      catch { return sendJson(res, 400, { error: 'invalid JSON body' }); }
+    }
+    const ns = typeof parsed.namespace === 'string' && parsed.namespace ? parsed.namespace : 'claude-cowork';
+    const limit = typeof parsed.limit === 'number' ? Math.max(1, Math.floor(parsed.limit)) : undefined;
+    const dryRun = Boolean(parsed.dry_run);
+
+    const probe = probeClaudeCowork();
+    if (!probe.found || probe.sessions.length === 0) {
+      return sendJson(res, 200, {
+        saved: 0,
+        errors: 0,
+        total_sessions: 0,
+        parsed: 0,
+        empty: 0,
+        namespace: ns,
+        scanned_roots: probe.scannedRoots,
+        hints: probe.hints,
+      });
+    }
+    const targets = limit ? probe.sessions.slice(0, limit) : probe.sessions;
+    const items: SaveMemoryInput[] = [];
+    let parseErrors = 0;
+    let empty = 0;
+    for (const s of targets) {
+      try {
+        const sessionItems = importFromCoworkSession(s.filePath, ns, {
+          sessionId: s.sessionId,
+          title: s.title,
+          cwd: s.cwd,
+        });
+        if (sessionItems.length === 0) empty++;
+        else items.push(...sessionItems);
+      } catch {
+        parseErrors++;
+      }
+    }
+    if (dryRun) {
+      return sendJson(res, 200, {
+        dry_run: true,
+        would_import: items.length,
+        empty,
+        parse_errors: parseErrors,
+        total_sessions: probe.sessions.length,
+        namespace: ns,
+        scanned_roots: probe.scannedRoots,
+      });
+    }
+    try {
+      const result = await p.bulkSave(items);
+      return sendJson(res, 200, {
+        ...result,
+        parsed: items.length,
+        empty,
+        parse_errors: parseErrors,
+        total_sessions: probe.sessions.length,
+        namespace: ns,
+        scanned_roots: probe.scannedRoots,
+      });
+    } catch (e: any) {
+      return sendJson(res, 500, { error: e?.message ?? String(e) });
     }
   }
 

@@ -349,6 +349,7 @@
       <span class="scope" id="scope">all namespaces</span>
       <button class="btn" id="import-btn">Import…</button>
       <input type="file" id="import-file" accept=".json" style="display:none" />
+      <button class="btn" id="import-cowork-btn" title="Import every Claude Cowork (local-agent-mode) chat from this machine">Import Cowork</button>
     </div>
 
     <div class="list-body" id="list">
@@ -726,6 +727,42 @@
   }
 
   // ─── import ───────────────────────────────────────────────────────────
+  async function importCowork() {
+    try {
+      toast('Probing for Cowork sessions…');
+      const probe = await api('/api/import/claude-cowork');
+      if (!probe || !probe.found || (probe.sessions ?? []).length === 0) {
+        const where = (probe?.scanned_roots ?? []).length
+          ? `Scanned ${probe.scanned_roots.length} root(s) but found no transcripts.`
+          : 'No Cowork install detected on this machine.';
+        toast(where + ' Try running Cowork once first.', 'err');
+        return;
+      }
+      const n = probe.sessions.length;
+      const totalMsgs = probe.sessions.reduce((a, s) => a + (s.message_count ?? 0), 0);
+      const ok = window.confirm(
+        `Import ${n} Cowork session${n === 1 ? '' : 's'} (${totalMsgs.toLocaleString()} messages) ` +
+        `into the "claude-cowork" namespace?\n\nIdempotent — safe to re-run.`,
+      );
+      if (!ok) return;
+      toast(`Importing ${n} session${n === 1 ? '' : 's'}…`);
+      const res = await api('/api/import/claude-cowork', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ namespace: 'claude-cowork' }),
+      });
+      const saved = res.saved ?? 0;
+      const errs = res.errors ?? 0;
+      toast(
+        `Imported ${saved} memory chunk${saved === 1 ? '' : 's'} from ${res.parsed ?? n} session(s)` +
+        (errs ? ` — ${errs} error${errs === 1 ? '' : 's'}` : '') +
+        ` (namespace "${res.namespace}").`,
+        errs ? 'err' : 'ok',
+      );
+      await Promise.all([loadList(), loadNamespaces(), loadStats()]);
+    } catch (e) { toast('cowork import failed: ' + e.message, 'err'); }
+  }
+
   async function importFile(file) {
     try {
       const text = await file.text();
@@ -768,6 +805,7 @@
     if (f) importFile(f);
     e.target.value = '';
   });
+  document.getElementById('import-cowork-btn').addEventListener('click', importCowork);
 
   // Drag-drop import
   const drop = document.getElementById('drop');

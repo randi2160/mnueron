@@ -23,6 +23,7 @@ import type { Memory, Provider, SaveMemoryInput } from './store/provider.js';
 import type { PluginRegistry } from './plugins/loader.js';
 import { importClaudeExport } from './import/claude.js';
 import { importOpenAIExport } from './import/openai.js';
+import { probeClaudeCowork, importFromCoworkSession } from './import/claude_cowork.js';
 
 // Sentinel registry for callers that don't pass one (CLI commands, tests).
 const EMPTY_REGISTRY: PluginRegistry = {
@@ -212,6 +213,19 @@ export const TOOL_DEFINITIONS = [
       required: ['path'],
     },
   },
+  {
+    name: 'memory_import_cowork',
+    description:
+      'Import every Claude Cowork (desktop "local agent") session transcript on this machine into memory. Probes platform-specific roots (~/.claude/projects, %APPDATA%\\Claude\\local-agent-mode-sessions, and the Microsoft Store Packages location), recursively finds Cowork JSONL transcripts, and saves each session as one memory (the chunker splits per-turn). Idempotent: re-running upserts by source_ref="cowork:<sessionId>". Use this when the user says "import my cowork chats" / "remember context from my past sessions" / similar.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: { type: 'string', description: 'Target namespace (default "claude-cowork").' },
+        limit: { type: 'number', description: 'Cap the number of sessions imported in this call (default unlimited).' },
+        probe_only: { type: 'boolean', description: 'If true, return what would be imported but do not save.' },
+      },
+    },
+  },
 ];
 
 export async function handleToolCall(
@@ -331,6 +345,76 @@ export async function handleToolCall(
       }
       const result = await provider.bulkSave(filtered);
       return { ...result, namespace: ns, format, dropped_by_plugin: droppedByPlugin };
+    }
+    case 'memory_import_cowork': {
+      const ns = (args.namespace as string) ?? 'claude-cowork';
+      const limit = typeof args.limit === 'number' ? Math.max(1, Math.floor(args.limit)) : undefined;
+      const probeOnly = Boolean(args.probe_only);
+
+      const probe = probeClaudeCowork();
+      if (!probe.found || probe.sessions.length === 0) {
+        return {
+          imported: 0,
+          saved: 0,
+          dropped_by_plugin: 0,
+          empty_sessions: 0,
+          errors: 0,
+          total_sessions: 0,
+          scanned_roots: probe.scannedRoots,
+          paths_attempted: probe.pathsAttempted,
+          hints: probe.hints,
+          namespace: ns,
+        };
+      }
+      const targets = limit ? probe.sessions.slice(0, limit) : probe.sessions;
+
+      const items: SaveMemoryInput[] = [];
+      let empty = 0;
+      let parseErrors = 0;
+      for (const s of targets) {
+        try {
+          const sessionItems = importFromCoworkSession(s.filePath, ns, {
+            sessionId: s.sessionId,
+            title: s.title,
+            cwd: s.cwd,
+          });
+          if (sessionItems.length === 0) empty++;
+          else items.push(...sessionItems);
+        } catch {
+          parseErrors++;
+        }
+      }
+
+      if (probeOnly) {
+        return {
+          would_import: items.length,
+          empty_sessions: empty,
+          parse_errors: parseErrors,
+          total_sessions: probe.sessions.length,
+          scanned_roots: probe.scannedRoots,
+          namespace: ns,
+          probe_only: true,
+        };
+      }
+
+      let droppedByPlugin = 0;
+      const filtered: SaveMemoryInput[] = [];
+      for (const it of items) {
+        const transformed = await runBeforeSave(it, registry);
+        if (transformed === null) droppedByPlugin++;
+        else filtered.push(transformed);
+      }
+      const result = await provider.bulkSave(filtered);
+      return {
+        ...result,
+        namespace: ns,
+        imported_sessions: items.length,
+        empty_sessions: empty,
+        parse_errors: parseErrors,
+        dropped_by_plugin: droppedByPlugin,
+        total_sessions: probe.sessions.length,
+        scanned_roots: probe.scannedRoots,
+      };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

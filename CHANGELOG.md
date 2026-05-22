@@ -10,6 +10,30 @@ messages and PR descriptions.
 These are in the repo on `main` but not yet published to npm. The next
 `npm publish` will bundle them as a minor or patch bump.
 
+### Added (Cowork local import)
+- **`mnueron import --claude-cowork`** — auto-import every Claude Cowork
+  ("local agent" desktop mode) session transcript from disk. Walks all
+  platform-specific roots including the Microsoft Store sandboxed location
+  (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\local-agent-mode-sessions\`),
+  recursively finds JSONL transcripts, filters by the `local-agent-mode-sessions`
+  cwd marker, and dedups by sessionId. Each session is saved as one memory
+  in the `claude-cowork` namespace (the chunker then splits per-turn).
+  Idempotent via `source_ref="cowork:<sessionId>"`. Flags: `--probe`,
+  `--ns <name>`, `--limit <n>`, `--dry-run`.
+- **`memory_import_cowork` MCP tool** — same logic exposed to any
+  MCP-connected agent so users can say "import my cowork chats" inside a
+  Claude session and have it run end-to-end. Accepts `namespace`, `limit`,
+  and `probe_only` parameters.
+- **Dashboard "Import Cowork" button** — local dashboard at `localhost:3122`
+  gains a one-click import. Backed by new endpoints `GET /api/import/claude-cowork`
+  (probe) and `POST /api/import/claude-cowork` (run). Confirms session +
+  message count before saving.
+- **`mnueron watch --claude-cowork`** — long-running incremental sync.
+  Polls every `--interval <minutes>` (default 5) and re-imports any session
+  whose transcript mtime has advanced. State persists at
+  `~/.mnueron/cowork-sync.json`. `--once` runs a single tick and exits;
+  Ctrl+C is caught and flushes state cleanly.
+
 ### Added (P1+P2 — Entity layer)
 - **Entity extraction on save.** When `metadata.extract_entities: true` is
   set per-call (or `MNUERON_ENABLE_ENTITY_EXTRACTION=true` is exported),

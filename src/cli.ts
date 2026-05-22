@@ -36,6 +36,7 @@ async function main() {
     case 'plugin':       return cmdPlugin(rest);
     case 'primer':       return cmdPrimer(rest);
     case 'extract-entities': return cmdExtractEntities(rest);
+    case 'watch':        return cmdWatch(rest);
     case 'help':
     case '--help':
     case '-h':
@@ -62,6 +63,14 @@ Commands:
   mnueron import --claude-desktop Probe + auto-import the local Claude Desktop app
        [--probe]                  Show what's found without importing
        [--ns <name>]              Target namespace (default: "claude-desktop")
+  mnueron import --claude-cowork  Auto-import every Cowork (desktop "local agent")
+       [--probe]                    chat. Walks platform-specific roots
+       [--ns <name>]                (incl. the Microsoft Store sandboxed path);
+       [--limit <n>]                each session becomes a chunked memory;
+       [--dry-run]                  idempotent via source_ref dedup.
+       Example: mnueron import --claude-cowork --probe
+                mnueron import --claude-cowork --ns elevizio --limit 10
+                mnueron import --claude-cowork --dry-run
   mnueron search <query>          Search memories from the terminal
        [--ns <name>] [--k <n>]
   mnueron stats                   Show counts by namespace
@@ -101,6 +110,15 @@ Commands:
        [--force]                    Re-extract memories that already have entities.
        [--dry-run]                  Preview without making LLM calls.
        Requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.
+
+  mnueron watch                   Background sync — keep memory in step with new chats.
+       --claude-cowork              Watch the on-disk Cowork transcripts and
+       [--interval <minutes>]       incrementally import new/changed sessions.
+       [--ns <name>]                Default interval 5m. State at
+       [--once]                     ~/.mnueron/cowork-sync.json. Ctrl+C stops it.
+       Example: mnueron watch --claude-cowork
+                mnueron watch --claude-cowork --interval 2 --ns elevizio
+                mnueron watch --claude-cowork --once
 
 Environment:
   MNUERON_DB_PATH    Local SQLite location (default: ~/.mnueron/memories.db)
@@ -166,6 +184,74 @@ async function cmdSetup(args: string[]) {
 }
 
 async function cmdImport(args: string[]) {
+  // v0.2.6 — `--claude-cowork` mode auto-imports every Cowork chat
+  // transcript from ~/.claude/projects/. No positional <file>.
+  if (args.includes('--claude-cowork')) {
+    const { probeClaudeCowork, autoImport } = await import('./import/claude_cowork.js');
+    const probeOnly = args.includes('--probe') || args.includes('--probe-only');
+    const dryRun = args.includes('--dry-run');
+    let ns = 'claude-cowork';
+    let limit: number | undefined;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+      else if (args[i] === '--limit' && args[i + 1]) {
+        const n = Number(args[++i]);
+        if (Number.isFinite(n) && n > 0) limit = Math.floor(n);
+      }
+    }
+    const probe = probeClaudeCowork();
+    console.log('🧠  Claude Cowork probe');
+    if (probe.scannedRoots.length > 0) {
+      console.log(`    Scanned ${probe.scannedRoots.length} root(s):`);
+      for (const r of probe.scannedRoots) console.log(`      - ${r}`);
+    } else {
+      console.log(`    Scanned 0 root(s) — none of the candidate paths exist.`);
+      console.log(`    Paths attempted (${probe.pathsAttempted.length}):`);
+      for (const p of probe.pathsAttempted) console.log(`      - ${p}`);
+    }
+    console.log(`    Cowork sessions: ${probe.sessions.length}`);
+    if (probe.sessions.length > 0) {
+      const preview = probe.sessions.slice(0, 5);
+      console.log('    Latest sessions:');
+      for (const s of preview) {
+        const title = s.title ?? '(untitled)';
+        const kb = (s.sizeBytes / 1024).toFixed(1);
+        console.log(`      • ${title} — ${s.messageCount} msgs, ${kb} KB  [${s.sessionId.slice(0, 8)}…]`);
+      }
+      if (probe.sessions.length > preview.length) {
+        console.log(`      … and ${probe.sessions.length - preview.length} more`);
+      }
+    }
+    for (const h of probe.hints) console.log(`    ${h}`);
+
+    if (probeOnly) {
+      console.log('  (--probe mode — not importing anything)');
+      return;
+    }
+    if (!probe.found || probe.sessions.length === 0) {
+      console.error('✗ Nothing to import.');
+      process.exit(1);
+    }
+
+    try {
+      const provider = makeProvider(loadConfig());
+      const result = await autoImport(provider, ns, { dryRun, limit });
+      await provider.close();
+      if (dryRun) {
+        console.log(`  (--dry-run) Would import ${result.parsed} session(s), ` +
+          `skip ${result.empty} empty, into namespace "${ns}".`);
+      } else {
+        console.log(`✓ Imported ${result.parsed} / ${result.totalSessions} session(s)`);
+        console.log(`  Saved ${result.saved} memory item(s), empty ${result.empty}, errors ${result.errors}`);
+        console.log(`  Namespace: "${ns}". Re-runs are idempotent (source_ref dedup).`);
+      }
+    } catch (e) {
+      console.error(`✗ ${(e as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   // v0.2.5 — `--claude-desktop` mode probes for and auto-imports the
   // user's locally-installed Claude Desktop export. No positional <file>.
   if (args.includes('--claude-desktop')) {
@@ -218,6 +304,7 @@ async function cmdImport(args: string[]) {
   if (args.length === 0) {
     console.error('Usage: mnueron import <file> [--ns <namespace>] [--format claude|openai]');
     console.error('       mnueron import --claude-desktop [--probe] [--ns <namespace>]');
+    console.error('       mnueron import --claude-cowork  [--probe] [--ns <namespace>] [--limit N] [--dry-run]');
     process.exit(1);
   }
   const file = args[0];
@@ -1047,6 +1134,36 @@ async function cmdExtractEntities(args: string[]) {
   } catch (e) {
     console.error('extract-entities failed:', e);
     process.exit(1);
+  }
+}
+
+async function cmdWatch(args: string[]) {
+  // For now the only mode is `--claude-cowork`. Future modes can dispatch here.
+  if (!args.includes('--claude-cowork')) {
+    console.error('Usage: mnueron watch --claude-cowork [--interval <minutes>] [--ns <name>] [--once]');
+    process.exit(1);
+  }
+  let intervalMs: number | undefined;
+  let ns = 'claude-cowork';
+  let once = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--interval' && args[i + 1]) {
+      const n = Number(args[++i]);
+      if (Number.isFinite(n) && n > 0) intervalMs = Math.floor(n * 60 * 1000);
+    } else if (a === '--ns' && args[i + 1]) {
+      ns = args[++i];
+    } else if (a === '--once') {
+      once = true;
+    }
+  }
+
+  const { runCoworkWatch } = await import('./watch/cowork.js');
+  const provider = makeProvider(loadConfig());
+  try {
+    await runCoworkWatch(provider, { intervalMs, namespace: ns, once });
+  } finally {
+    await provider.close();
   }
 }
 

@@ -367,8 +367,13 @@ async function tiebreakWithLLM(
   cases: AmbiguousCase[],
   byokKey: string | undefined,
 ): Promise<Array<string | 'new'>> {
-  const apiKey = byokKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return cases.map(() => 'new');
+  // Provider precedence mirrors entity-extractor.ts so users with only
+  // OPENAI_API_KEY (and no Anthropic) get a working tiebreak instead of
+  // falling through to all-"new". BYOK key (always Anthropic in this
+  // build) wins; then env Anthropic; then env OpenAI; then bail.
+  const anthropicKey = byokKey || process.env.ANTHROPIC_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!anthropicKey && !openaiKey) return cases.map(() => 'new');
 
   const numbered = cases
     .map((c, i) => {
@@ -392,6 +397,20 @@ async function tiebreakWithLLM(
     'For each case, set "match" to the candidate index (0, 1, 2) if same entity, ' +
     'or "new" if none match. Be conservative — only merge when confident.';
 
+  if (anthropicKey) {
+    const result = await tiebreakViaAnthropic(numbered, system, anthropicKey, cases);
+    if (result) return result;
+  }
+  if (openaiKey) {
+    const result = await tiebreakViaOpenAI(numbered, system, openaiKey, cases);
+    if (result) return result;
+  }
+  return cases.map(() => 'new');
+}
+
+async function tiebreakViaAnthropic(
+  numbered: string, system: string, apiKey: string, cases: AmbiguousCase[],
+): Promise<Array<string | 'new'> | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
@@ -411,8 +430,7 @@ async function tiebreakWithLLM(
       }),
       signal: ctrl.signal,
     });
-    if (!resp.ok) return cases.map(() => 'new');
-
+    if (!resp.ok) return null;
     const data = (await resp.json()) as {
       content?: Array<{ type: string; text?: string }>;
     };
@@ -420,14 +438,53 @@ async function tiebreakWithLLM(
       .filter((b) => b.type === 'text')
       .map((b) => b.text ?? '')
       .join('');
-
     return parseDecisions(text, cases);
   } catch (e) {
     console.warn(
-      '[mnueron/entity-resolver] tiebreak failed:',
+      '[mnueron/entity-resolver/anthropic] tiebreak failed:',
       e instanceof Error ? e.message : e,
     );
-    return cases.map(() => 'new');
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function tiebreakViaOpenAI(
+  numbered: string, system: string, apiKey: string, cases: AmbiguousCase[],
+): Promise<Array<string | 'new'> | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 800,
+        temperature: 0.0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: numbered },
+        ],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return parseDecisions(data.choices?.[0]?.message?.content ?? '', cases);
+  } catch (e) {
+    console.warn(
+      '[mnueron/entity-resolver/openai] tiebreak failed:',
+      e instanceof Error ? e.message : e,
+    );
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -468,6 +525,76 @@ function parseDecisions(
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────────
+
+function clamp(n: number, lo: number, hi: number): number {
+  return n < lo ? lo : n > hi ? hi : n;
+}
+y({
+        model: 'gpt-4o-mini',
+        max_tokens: 800,
+        temperature: 0.0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: numbered },
+        ],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return parseDecisions(data.choices?.[0]?.message?.content ?? '', cases);
+  } catch (e) {
+    console.warn(
+      '[mnueron/entity-resolver/openai] tiebreak failed:',
+      e instanceof Error ? e.message : e,
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseDecisions(
+  raw: string,
+  cases: AmbiguousCase[],
+): Array<string | 'new'> {
+  const out: Array<string | 'new'> = cases.map(() => 'new');
+  let s = raw.trim();
+  if (s.startsWith('```')) s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const start = s.search(/[\[{]/);
+  if (start > 0) s = s.slice(start);
+
+  try {
+    const parsed = JSON.parse(s) as {
+      decisions?: Array<{ case?: number; match?: number | string }>;
+    };
+    for (const d of parsed.decisions ?? []) {
+      if (typeof d.case !== 'number') continue;
+      if (d.case < 0 || d.case >= cases.length) continue;
+      const m = d.match;
+      if (m === 'new' || m == null) {
+        out[d.case] = 'new';
+      } else if (
+        typeof m === 'number' &&
+        m >= 0 &&
+        m < cases[d.case].candidates.length
+      ) {
+        out[d.case] = cases[d.case].candidates[m].entity.id;
+      }
+    }
+  } catch {
+    // Stay on default — all "new".
+  }
+  return out;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return n < lo ? lo : n > hi ? hi : n;
+}
+─────────────────────────────────────
 
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;

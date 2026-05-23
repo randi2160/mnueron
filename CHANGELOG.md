@@ -10,6 +10,69 @@ messages and PR descriptions.
 These are in the repo on `main` but not yet published to npm. The next
 `npm publish` will bundle them as a minor or patch bump.
 
+### Added (P2.3 — Local SQLite entity resolution)
+- **Local entity resolution** matches the hosted `/api/entities` capability:
+  when entity extraction (P1) stamps `metadata.entities` on a save, the
+  resolver now assigns a `canonical_id` to each one. Same person mentioned
+  across 30 memories collapses to one entity row.
+- **Embedding-similarity resolver** — local impl uses sqlite-vec cosine
+  similarity instead of pg_trgm (hosted's tool). More semantically robust
+  than trigrams; "JS" and "JavaScript" cluster as the same entity.
+  Thresholds: ≥0.85 = auto-reuse, 0.65–0.85 = LLM tiebreak via Haiku,
+  < 0.65 = create new canonical.
+- **New tables** (idempotent CREATE IF NOT EXISTS, no migration script):
+  `entities`, `entities_vec`, `memory_entities`. Created on first
+  `LocalProvider` construction.
+- **`mnueron entities <list|show|merge>`** — CLI to browse and curate.
+  List with `--type`, `--q`, `--sort recent|mentions|alpha`. Show prints
+  full details + linked memories with surface forms. Merge collapses two
+  canonicals into one (aliases + edges absorbed).
+- Provider interface gained `listEntities`, `getEntity`,
+  `getEntityMemories`, `mergeEntities` (optional methods — hosted will
+  mirror these on the SDK side).
+
+### Added (P3 — Knowledge graph)
+- **Relationship extraction** — after entity resolution succeeds, a second
+  Haiku call extracts triples (`from_entity`, `predicate`, `to_entity`)
+  from the memory text. Each edge carries provenance (`memory_id`) +
+  `confidence`. New `relations` table with indexes on from/to/predicate.
+- **Predicate normalization** — snake_case lowercase verb phrases (e.g.
+  `recommended`, `works_at`, `deprecated_for`). Self-loops dropped.
+  Confidence floor 0.5.
+- **`mnueron graph <show|traverse|relations>`** — CLI to query the graph.
+  `show` lists incoming + outgoing edges for one entity. `traverse` does
+  BFS out to `--depth N` (capped 5). `relations` is the raw query layer
+  for scripting.
+- Provider interface gained `getRelations` and `traverseGraph`.
+- Gated by `MNUERON_ENABLE_RELATION_EXTRACTION=true` env var or
+  per-call `metadata.extract_relations: true` (mirrors entity gating).
+  Adds ~$0.001 per save when active.
+
+### Added (P4 — Temporal reasoning / bi-temporal)
+- **Validity windows on relations** — extraction prompt also asks for
+  `valid_from` / `valid_to`. Stored as nullable epoch-ms columns on
+  `relations`. Null on both = "fact has no known time bounds, treat as
+  always valid."
+- **`--as-of <ISO-date>` filter** on `getRelations` and `traverseGraph`.
+  Returns only edges that were valid at that point in time. Powers
+  queries like "what did John recommend in Q1?" or "who reported to
+  whom in 2024?".
+- The `valid_from`/`valid_to` columns were added in the P3 schema rev
+  already, so no separate migration was needed for P4.
+
+### Added (P5 — Self-revising memory loop, phase 5a)
+- **Detection-only consolidation** — `mnueron consolidate detect` walks
+  recent memories, vector-searches top-K neighbors per memory, and
+  enqueues `consolidation_proposals` rows for pairs above a similarity
+  threshold (default 0.92). No automatic merges — safe to run any time.
+- Idempotent via a `(memory_a_id, memory_b_id, kind)` UNIQUE INDEX —
+  re-scans don't multiply proposals.
+- **`mnueron consolidate <list|approve|reject>`** — review queue. Phase
+  5a just records the decision; phase 5b will action approved merges
+  with full audit + reversal support.
+- Provider gained `detectConsolidation`, `proposalsList`,
+  `proposalReview`.
+
 ### Added (Cowork local import)
 - **`mnueron import --claude-cowork`** — auto-import every Claude Cowork
   ("local agent" desktop mode) session transcript from disk. Walks all
@@ -33,6 +96,19 @@ These are in the repo on `main` but not yet published to npm. The next
   whose transcript mtime has advanced. State persists at
   `~/.mnueron/cowork-sync.json`. `--once` runs a single tick and exits;
   Ctrl+C is caught and flushes state cleanly.
+
+### Fixed
+- **Microsoft Store Claude Desktop install now detected.** `mnueron setup
+  --only claude-desktop` used to say "Claude Desktop not detected" for
+  users running the Microsoft Store build, because the detector only
+  looked at `%APPDATA%\Claude\`. The Store sandboxes app writes into
+  `%LOCALAPPDATA%\Packages\Claude_<sfx>\LocalCache\Roaming\Claude\`. The
+  detector (and the Cowork importer's probe) now walk both paths.
+- **`RemoteProvider` migrated `/v1/*` → `/api/*`.** The CLI was pointing at
+  the unshipped standalone `server/index.ts` route prefix. The actual
+  deployed hosted backend is the Next.js app under `ai-boilerplate-pro`,
+  which exposes `/api/memories`, `/api/namespaces`, etc. Re-wired
+  + added pre-chunking, 1-write/sec throttle, 429 backoff, retry-on-5xx.
 
 ### Added (P1+P2 — Entity layer)
 - **Entity extraction on save.** When `metadata.extract_entities: true` is

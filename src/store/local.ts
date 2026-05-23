@@ -6,10 +6,19 @@ import * as sqliteVec from 'sqlite-vec';
 import { embed, embedBatch, EMBEDDING_DIM, preload } from './embeddings.js';
 import { chunkContent, shouldChunk, DEFAULT_CHUNK_THRESHOLD } from './chunking.js';
 import { extractEntities, shouldExtractEntities } from './entity-extractor.js';
+import { resolveEntitiesForMemory } from './entity-resolver.js';
+import { extractRelations, shouldExtractRelations } from './relation-extractor.js';
+import {
+  ensureConsolidationSchema, detectDuplicates, listProposals, reviewProposal,
+  type ConsolidationProposal, type ScanOptions, type ScanResult,
+  type ProposalListOptions,
+} from './consolidator.js';
 import { redact } from './redactor.js';
 import type {
   Provider, Memory, SaveMemoryInput, SearchInput, ListInput, NamespaceInfo,
   MemoryFilters, BulkSearchInput, BulkSearchResult, UpdateMemoryInput,
+  Entity, EntityListInput, EntityMemoryHit,
+  Relation, GetRelationsInput, TraverseHop,
 } from './provider.js';
 
 /**
@@ -45,6 +54,37 @@ function buildFilterFragment(f: MemoryFilters, alias = 'm'): { sql: string; para
     }
   }
   return { sql: parts.join(' AND '), params };
+}
+
+/** Clamp a caller-supplied LIMIT to a sensible max — prevents accidental
+ *  `LIMIT 999999` exhausting memory on large stores. */
+function clampLimit(want: number, max: number): number {
+  if (!Number.isFinite(want) || want <= 0) return Math.min(100, max);
+  return Math.min(Math.floor(want), max);
+}
+
+/** Materialize an `entities` row into the public Entity shape. Parses
+ *  aliases_json defensively — older rows or hand-edited data can have
+ *  malformed JSON and we'd rather return an empty alias list than throw. */
+function rowToEntity(row: {
+  id: string; display_name: string; entity_type: string;
+  aliases_json: string; mention_count: number;
+  first_seen_at: number; last_seen_at: number;
+}): Entity {
+  let aliases: string[] = [];
+  try {
+    const parsed = JSON.parse(row.aliases_json);
+    if (Array.isArray(parsed)) aliases = parsed.filter((x) => typeof x === 'string');
+  } catch { /* leave empty */ }
+  return {
+    id: row.id,
+    display_name: row.display_name,
+    entity_type: row.entity_type,
+    aliases,
+    mention_count: row.mention_count,
+    first_seen_at: row.first_seen_at,
+    last_seen_at: row.last_seen_at,
+  };
 }
 
 /**
@@ -205,6 +245,84 @@ export class LocalProvider implements Provider {
         );
       `);
     }
+
+    // ── P2.3 — Entity resolution tables ──────────────────────────────────
+    // Canonical entities: one row per unique entity (person/org/project/...)
+    // resolved across all memories. `mention_count` and `last_seen_at` make
+    // it trivial to show "who/what is most active in your store right now".
+    //
+    // memory_entities: many-to-many join — one row per (memory, canonical
+    // entity) pair. `surface_form` is what the memory text actually said
+    // (e.g., "Johnny" → resolved to canonical "John Doe"); `confidence`
+    // ranges in [0, 1] from exact match (1.0) down through embedding
+    // similarity and LLM tiebreak picks (0.65-0.85).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entities (
+        id              TEXT PRIMARY KEY,
+        display_name    TEXT NOT NULL,
+        entity_type     TEXT NOT NULL,
+        aliases_json    TEXT NOT NULL DEFAULT '[]',
+        mention_count   INTEGER NOT NULL DEFAULT 0,
+        first_seen_at   INTEGER NOT NULL,
+        last_seen_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_entities_type
+        ON entities(entity_type);
+      CREATE INDEX IF NOT EXISTS idx_entities_last_seen
+        ON entities(last_seen_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_entities (
+        memory_id     TEXT NOT NULL,
+        entity_id     TEXT NOT NULL,
+        surface_form  TEXT NOT NULL,
+        confidence    REAL NOT NULL,
+        PRIMARY KEY (memory_id, entity_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_entities_entity
+        ON memory_entities(entity_id);
+
+      -- P3 — Knowledge-graph edges. Each row is a triple (from, predicate,
+      -- to) plus provenance (memory_id) + confidence. P4 forward-looking
+      -- columns (valid_from / valid_to) are added now so bi-temporal
+      -- queries don't require a schema migration later.
+      CREATE TABLE IF NOT EXISTS relations (
+        id              TEXT PRIMARY KEY,
+        from_entity_id  TEXT NOT NULL,
+        to_entity_id    TEXT NOT NULL,
+        predicate       TEXT NOT NULL,
+        memory_id       TEXT NOT NULL,
+        confidence      REAL NOT NULL,
+        valid_from      INTEGER,
+        valid_to        INTEGER,
+        recorded_at     INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_relations_from
+        ON relations(from_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_to
+        ON relations(to_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_predicate
+        ON relations(predicate);
+      CREATE INDEX IF NOT EXISTS idx_relations_memory
+        ON relations(memory_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_valid_to
+        ON relations(valid_to);
+    `);
+
+    if (this.vecAvailable) {
+      // Embedding index for entity name+context strings. Used by the
+      // resolver's vector-similarity stage when finding candidate matches
+      // for a freshly extracted entity.
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS entities_vec
+        USING vec0(
+          entity_id TEXT PRIMARY KEY,
+          embedding float[${EMBEDDING_DIM}]
+        );
+      `);
+    }
+
+    // P5 — Consolidation proposal table (idempotent).
+    ensureConsolidationSchema(this.db);
   }
 
   // ─── write path ──────────────────────────────────────────────────────────
@@ -293,12 +411,117 @@ export class LocalProvider implements Provider {
     });
     tx();
 
+    // ── P2.3 — Entity resolution ────────────────────────────────────────
+    // If P1 extraction stamped `metadata.entities`, resolve each one to a
+    // canonical entity (reuse OR create), insert memory_entities edges,
+    // and write the resolved canonical_ids back onto the stored metadata.
+    //
+    // This runs AFTER the memory row exists so the resolver has a valid
+    // memory_id to link to. It also runs OUTSIDE the transaction because
+    // embeddings + LLM tiebreak are async; if those fail mid-way, the
+    // memory still saved successfully (fail-open contract).
+    let finalMetadata = input.metadata;
+    const extractedEntities = Array.isArray(input.metadata?.entities)
+      ? (input.metadata!.entities as Array<{ name: string; type: string; context?: string }>)
+      : [];
+    if (extractedEntities.length > 0) {
+      try {
+        const meta = input.metadata as Record<string, unknown>;
+        const byokAnthropic = typeof meta.byok_anthropic_key === 'string'
+          ? (meta.byok_anthropic_key as string) : undefined;
+        const resolutions = await resolveEntitiesForMemory(
+          this.db,
+          id,
+          extractedEntities.map((e) => ({
+            name: e.name,
+            type: e.type,
+            context: e.context,
+          })),
+          this.vecAvailable,
+          { anthropicKey: byokAnthropic },
+        );
+        // Stamp canonical_id back onto each entity in the stored metadata.
+        const entitiesWithIds = extractedEntities.map((e, i) => ({
+          ...e,
+          canonical_id: resolutions[i]?.canonical_id ?? null,
+        }));
+        finalMetadata = { ...(input.metadata ?? {}), entities: entitiesWithIds };
+        this.db.prepare(`UPDATE memories SET meta_json = ?, updated_at = ? WHERE id = ?`)
+          .run(JSON.stringify(finalMetadata), now, id);
+
+        // ── P3 — Relationship extraction ────────────────────────────────
+        // Once we have resolved canonical entities, ask the LLM what
+        // relationships exist between them. This populates `relations`
+        // edges that form the knowledge-graph layer. Gated separately
+        // from entity extraction so users can have entities-only without
+        // paying the second Haiku call.
+        const resolvedForRelations = extractedEntities
+          .map((e, i) => ({
+            canonical_id: resolutions[i]?.canonical_id ?? null,
+            name: e.name,
+            type: e.type,
+          }))
+          .filter((e): e is { canonical_id: string; name: string; type: string } =>
+            !!e.canonical_id,
+          );
+        if (shouldExtractRelations(input.content.length, resolvedForRelations.length, input.metadata)) {
+          try {
+            const meta = input.metadata as Record<string, unknown>;
+            const byokAnthropic = typeof meta.byok_anthropic_key === 'string'
+              ? (meta.byok_anthropic_key as string) : undefined;
+            const relations = await extractRelations(
+              input.content,
+              resolvedForRelations,
+              { anthropicKey: byokAnthropic },
+            );
+            if (relations.length > 0) {
+              const insertRel = this.db.prepare<[
+                string, string, string, string, string, number,
+                number | null, number | null, number,
+              ]>(
+                `INSERT INTO relations
+                   (id, from_entity_id, to_entity_id, predicate, memory_id,
+                    confidence, valid_from, valid_to, recorded_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              );
+              const tx2 = this.db.transaction(() => {
+                for (const r of relations) {
+                  insertRel.run(
+                    randomUUID(),
+                    r.from_canonical_id,
+                    r.to_canonical_id,
+                    r.predicate,
+                    id,
+                    r.confidence,
+                    r.valid_from,
+                    r.valid_to,
+                    now,
+                  );
+                }
+              });
+              tx2();
+            }
+          } catch (e) {
+            console.warn(
+              '[mnueron/local] relation extraction failed (memory + entities saved):',
+              e instanceof Error ? e.message : e,
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(
+          '[mnueron/local] entity resolution failed (memory saved without canonical_ids):',
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
+
     return this.rowToMemory({
       id, namespace: ns, content: input.content,
       tags_json: JSON.stringify(tags),
       source: input.source ?? 'manual',
       source_ref: input.source_ref ?? null,
-      meta_json: input.metadata ? JSON.stringify(input.metadata) : null,
+      meta_json: finalMetadata ? JSON.stringify(finalMetadata) : null,
       created_at: now, updated_at: now,
     });
   }
@@ -750,6 +973,305 @@ export class LocalProvider implements Provider {
       count: r.count,
       last_updated: r.last_updated ?? 0,
     }));
+  }
+
+  // ─── P2.3 — Entity API ──────────────────────────────────────────────────
+
+  /**
+   * List canonical entities with optional type filter, free-text query
+   * against display_name + aliases, and sort. Default sort: most-recently-seen.
+   */
+  async listEntities(input: EntityListInput = {}): Promise<Entity[]> {
+    const limit = clampLimit(input.limit ?? 100, 500);
+    const offset = Math.max(0, input.offset ?? 0);
+    const parts: string[] = ['1=1'];
+    const params: unknown[] = [];
+
+    if (input.type) {
+      parts.push('entity_type = ?');
+      params.push(input.type);
+    }
+    if (input.q && input.q.trim()) {
+      // Match display_name OR any alias (case-insensitive substring).
+      parts.push(`(
+        lower(display_name) LIKE lower('%' || ? || '%')
+        OR EXISTS (
+          SELECT 1 FROM json_each(aliases_json) AS a
+           WHERE lower(a.value) LIKE lower('%' || ? || '%')
+        )
+      )`);
+      params.push(input.q.trim(), input.q.trim());
+    }
+
+    const orderBy = (() => {
+      switch (input.sort) {
+        case 'mentions': return 'mention_count DESC, last_seen_at DESC';
+        case 'alpha':    return 'lower(display_name) ASC';
+        default:         return 'last_seen_at DESC'; // 'recent'
+      }
+    })();
+
+    const rows = this.db
+      .prepare(`SELECT * FROM entities WHERE ${parts.join(' AND ')} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as Array<{
+        id: string;
+        display_name: string;
+        entity_type: string;
+        aliases_json: string;
+        mention_count: number;
+        first_seen_at: number;
+        last_seen_at: number;
+      }>;
+
+    return rows.map(rowToEntity);
+  }
+
+  /** Single canonical entity by id, or null if not found. */
+  async getEntity(id: string): Promise<Entity | null> {
+    const row = this.db
+      .prepare(`SELECT * FROM entities WHERE id = ? LIMIT 1`)
+      .get(id) as
+        | { id: string; display_name: string; entity_type: string;
+            aliases_json: string; mention_count: number;
+            first_seen_at: number; last_seen_at: number; }
+        | undefined;
+    return row ? rowToEntity(row) : null;
+  }
+
+  /**
+   * All memories linked to a canonical entity, most recent first. Includes
+   * the original surface_form so callers can render "John (mentioned as
+   * 'Johnny')". Caps at `limit` (default 100, max 500) — entity histories
+   * can get long.
+   */
+  async getEntityMemories(id: string, limit = 100): Promise<EntityMemoryHit[]> {
+    const cap = clampLimit(limit, 500);
+    const rows = this.db
+      .prepare(
+        `SELECT m.id, m.namespace, m.content, m.tags_json, m.source, m.source_ref,
+                m.meta_json, m.created_at, m.updated_at,
+                me.surface_form, me.confidence
+           FROM memory_entities me
+           JOIN memories m ON m.id = me.memory_id
+          WHERE me.entity_id = ?
+          ORDER BY m.created_at DESC
+          LIMIT ?`,
+      )
+      .all(id, cap) as Array<{
+        id: string; namespace: string; content: string;
+        tags_json: string; source: string; source_ref: string | null;
+        meta_json: string | null; created_at: number; updated_at: number;
+        surface_form: string; confidence: number;
+      }>;
+
+    return rows.map((r) => ({
+      ...this.rowToMemory(r),
+      surface_form: r.surface_form,
+      confidence: r.confidence,
+    }));
+  }
+
+  /**
+   * Merge two canonical entities. After merge:
+   *   • loserId is hard-deleted from `entities` + `entities_vec`.
+   *   • All memory_entities rows pointing at loserId are repointed at winnerId.
+   *     If the winner already has an edge to the same memory, we keep the
+   *     stronger-confidence one and drop the duplicate.
+   *   • Aliases from loser are absorbed into winner (deduped).
+   *   • mention_count is summed; first_seen_at = min, last_seen_at = max.
+   *
+   * Returns the merged winner row, or null if either id is missing.
+   *
+   * This runs in a single SQL transaction. Future enhancement: emit a
+   * `entity_merge_log` row so merges are auditable / reversible.
+   */
+  async mergeEntities(winnerId: string, loserId: string): Promise<Entity | null> {
+    if (winnerId === loserId) return this.getEntity(winnerId);
+
+    const winner = this.db.prepare(`SELECT * FROM entities WHERE id = ?`).get(winnerId) as any;
+    const loser  = this.db.prepare(`SELECT * FROM entities WHERE id = ?`).get(loserId) as any;
+    if (!winner || !loser) return null;
+
+    let winnerAliases: string[] = [];
+    let loserAliases:  string[] = [];
+    try { winnerAliases = JSON.parse(winner.aliases_json); } catch { /* */ }
+    try { loserAliases  = JSON.parse(loser.aliases_json);  } catch { /* */ }
+    const mergedAliases = Array.from(new Set([...winnerAliases, ...loserAliases, loser.display_name]));
+
+    const tx = this.db.transaction(() => {
+      // Repoint edges. INSERT-OR-IGNORE then DELETE-old, with confidence MAX
+      // fold to preserve the strongest edge if both winner and loser shared
+      // a memory.
+      this.db.prepare(
+        `INSERT INTO memory_entities (memory_id, entity_id, surface_form, confidence)
+         SELECT memory_id, ?, surface_form, confidence
+           FROM memory_entities WHERE entity_id = ?
+         ON CONFLICT(memory_id, entity_id) DO UPDATE SET
+           confidence = MAX(memory_entities.confidence, excluded.confidence)`,
+      ).run(winnerId, loserId);
+
+      this.db.prepare(`DELETE FROM memory_entities WHERE entity_id = ?`).run(loserId);
+
+      // Update winner aggregate.
+      this.db.prepare(
+        `UPDATE entities SET
+           aliases_json   = ?,
+           mention_count  = mention_count + ?,
+           first_seen_at  = MIN(first_seen_at, ?),
+           last_seen_at   = MAX(last_seen_at,  ?)
+         WHERE id = ?`,
+      ).run(
+        JSON.stringify(mergedAliases),
+        loser.mention_count,
+        loser.first_seen_at,
+        loser.last_seen_at,
+        winnerId,
+      );
+
+      // Delete loser everywhere.
+      if (this.vecAvailable) {
+        try { this.db.prepare(`DELETE FROM entities_vec WHERE entity_id = ?`).run(loserId); }
+        catch { /* vec0 sometimes lacks DELETE; non-fatal */ }
+      }
+      this.db.prepare(`DELETE FROM entities WHERE id = ?`).run(loserId);
+    });
+    tx();
+
+    return this.getEntity(winnerId);
+  }
+
+  // ─── P3 + P4 — Knowledge graph API ──────────────────────────────────────
+
+  /**
+   * Fetch relation edges. All filters compose with AND. Uses indexed
+   * lookups when from/to/predicate is set; otherwise sorted by most-recent.
+   *
+   * The P4 `asOf` filter implements bi-temporal recall: only edges whose
+   * validity window contains `asOf` (and edges with no temporal info,
+   * which are treated as "always valid") are returned. This is what
+   * powers queries like "what did John think about X in January?"
+   */
+  async getRelations(input: GetRelationsInput): Promise<Relation[]> {
+    const parts: string[] = ['1=1'];
+    const params: unknown[] = [];
+    if (input.fromEntityId) {
+      parts.push('from_entity_id = ?');
+      params.push(input.fromEntityId);
+    }
+    if (input.toEntityId) {
+      parts.push('to_entity_id = ?');
+      params.push(input.toEntityId);
+    }
+    if (input.predicate) {
+      parts.push('predicate = ?');
+      params.push(input.predicate);
+    }
+    if (typeof input.asOf === 'number') {
+      // Match if (valid_from IS NULL OR valid_from <= asOf)
+      //     AND (valid_to   IS NULL OR valid_to   >  asOf)
+      // Edges with no temporal info pass both clauses.
+      parts.push('(valid_from IS NULL OR valid_from <= ?)');
+      parts.push('(valid_to   IS NULL OR valid_to   >  ?)');
+      params.push(input.asOf, input.asOf);
+    }
+    const limit = clampLimit(input.limit ?? 200, 1000);
+
+    const rows = this.db
+      .prepare(
+        `SELECT id, from_entity_id, to_entity_id, predicate, memory_id,
+                confidence, valid_from, valid_to, recorded_at
+           FROM relations
+          WHERE ${parts.join(' AND ')}
+          ORDER BY recorded_at DESC
+          LIMIT ?`,
+      )
+      .all(...params, limit) as Relation[];
+    return rows;
+  }
+
+  /**
+   * BFS traversal from a seed entity. Visits up to `depth` hops, following
+   * BOTH outgoing and incoming edges so the user sees a complete
+   * neighborhood. Each hop carries the edge that led to it.
+   *
+   * Respects the P4 `asOf` filter — only edges valid at that point in
+   * time are followed.
+   *
+   * Bounds: depth is capped to 5 to keep dense graphs sane. Within each
+   * hop we cap at 50 edges to avoid pathological star-graph blowups
+   * (one super-node with thousands of mentions).
+   */
+  async traverseGraph(
+    seedEntityId: string,
+    opts: { depth?: number; asOf?: number } = {},
+  ): Promise<TraverseHop[]> {
+    const depth = Math.max(0, Math.min(opts.depth ?? 2, 5));
+    const seed = await this.getEntity(seedEntityId);
+    if (!seed) return [];
+
+    const visited = new Map<string, TraverseHop>();
+    const queue: Array<{ entityId: string; depth: number; via: Relation | null; direction: 'out' | 'in' | null }> = [
+      { entityId: seedEntityId, depth: 0, via: null, direction: null },
+    ];
+
+    while (queue.length > 0) {
+      const { entityId, depth: d, via, direction } = queue.shift()!;
+      if (visited.has(entityId)) continue;
+
+      const e = entityId === seedEntityId ? seed : await this.getEntity(entityId);
+      if (!e) continue;
+      visited.set(entityId, { entity: e, via, direction, depth: d });
+
+      if (d >= depth) continue;
+
+      // Expand outgoing.
+      const outgoing = await this.getRelations({
+        fromEntityId: entityId,
+        asOf: opts.asOf,
+        limit: 50,
+      });
+      for (const rel of outgoing) {
+        if (!visited.has(rel.to_entity_id)) {
+          queue.push({ entityId: rel.to_entity_id, depth: d + 1, via: rel, direction: 'out' });
+        }
+      }
+      // Expand incoming.
+      const incoming = await this.getRelations({
+        toEntityId: entityId,
+        asOf: opts.asOf,
+        limit: 50,
+      });
+      for (const rel of incoming) {
+        if (!visited.has(rel.from_entity_id)) {
+          queue.push({ entityId: rel.from_entity_id, depth: d + 1, via: rel, direction: 'in' });
+        }
+      }
+    }
+
+    // Stable order: depth ASC, then alpha for readable output.
+    return Array.from(visited.values()).sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.entity.display_name.localeCompare(b.entity.display_name);
+    });
+  }
+
+  // ─── P5 — Self-revising memory (5a detection) ───────────────────────────
+
+  async detectConsolidation(opts: ScanOptions = {}): Promise<ScanResult> {
+    return detectDuplicates(this.db, this.vecAvailable, opts);
+  }
+
+  async proposalsList(
+    opts: ProposalListOptions = {},
+  ): Promise<ConsolidationProposal[]> {
+    return listProposals(this.db, opts);
+  }
+
+  async proposalReview(
+    id: string,
+    decision: 'approved' | 'rejected',
+  ): Promise<ConsolidationProposal | null> {
+    return reviewProposal(this.db, id, decision);
   }
 
   async close() {

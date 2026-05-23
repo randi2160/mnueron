@@ -36,6 +36,9 @@ async function main() {
     case 'plugin':       return cmdPlugin(rest);
     case 'primer':       return cmdPrimer(rest);
     case 'extract-entities': return cmdExtractEntities(rest);
+    case 'entities':     return cmdEntities(rest);  // P2.3 — list/show/merge
+    case 'graph':        return cmdGraph(rest);     // P3 + P4 — knowledge graph
+    case 'consolidate':  return cmdConsolidate(rest); // P5 — detection-only review queue
     case 'watch':        return cmdWatch(rest);
     case 'help':
     case '--help':
@@ -110,6 +113,26 @@ Commands:
        [--force]                    Re-extract memories that already have entities.
        [--dry-run]                  Preview without making LLM calls.
        Requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.
+
+  mnueron entities <sub>           P2.3 — Canonical entity browser (resolved across memories).
+       list   [--type <t>] [--q <substr>] [--sort recent|mentions|alpha] [--limit <n>]
+       show   <entity-id> [--memories <n>]
+       merge  --winner <id> --loser <id>
+       Example: mnueron entities list --type person --sort mentions
+
+  mnueron graph <sub>              P3 + P4 — Knowledge graph (relationships + bi-temporal).
+       show       <entity-id> [--as-of <ISO-date>]
+       traverse   <entity-id> [--depth <n>] [--as-of <ISO-date>]
+       relations  [--from <id>] [--to <id>] [--predicate <p>] [--as-of <ISO-date>]
+       The --as-of flag enables "what was true at that point in time" recall.
+
+  mnueron consolidate <sub>        P5 — Self-revising memory (phase 5a: detection only).
+       detect   [--limit <n>] [--threshold <0..1>] [--ns <name>]
+       list     [--status pending|approved|rejected|all]
+       approve  <proposal-id>
+       reject   <proposal-id>
+       Detection scans for likely-duplicate memories via embedding similarity
+       and surfaces them as proposals. Phase 5a does NOT auto-merge.
 
   mnueron watch                   Background sync — keep memory in step with new chats.
        --claude-cowork              Watch the on-disk Cowork transcripts and
@@ -1135,6 +1158,521 @@ async function cmdExtractEntities(args: string[]) {
     console.error('extract-entities failed:', e);
     process.exit(1);
   }
+}
+
+/**
+ * P2.3 — `mnueron entities <list|show|merge>`
+ *
+ * Surfaces canonical entities the resolver has built up. Three subcommands:
+ *
+ *   list   — table view of entities, filtered by type / sorted by recent
+ *            / most-mentioned / alphabetical.
+ *   show   — full detail for one entity, including the linked memories.
+ *   merge  — collapse two duplicate canonicals into one (winner keeps id;
+ *            loser's memories + aliases absorbed into winner).
+ *
+ * All three only work with the local SQLite provider — hosted entity
+ * resolution lives on the mnueron.com backend and the SDK's `entities`
+ * namespace is the way to talk to it.
+ */
+async function cmdEntities(args: string[]) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'list':  return cmdEntitiesList(rest);
+    case 'show':  return cmdEntitiesShow(rest);
+    case 'merge': return cmdEntitiesMerge(rest);
+    case undefined:
+    case '--help':
+    case '-h':
+      console.log(
+        'Usage:\n' +
+          '  mnueron entities list   [--type <t>] [--q <substr>] [--sort recent|mentions|alpha] [--limit <n>]\n' +
+          '  mnueron entities show   <entity-id>  [--memories <n>]\n' +
+          '  mnueron entities merge  --winner <id> --loser <id>\n\n' +
+          'Examples:\n' +
+          '  mnueron entities list --type person --sort mentions\n' +
+          '  mnueron entities show ent-abc123 --memories 50\n' +
+          '  mnueron entities merge --winner ent-abc --loser ent-def',
+      );
+      return;
+    default:
+      console.error(`Unknown entities subcommand: ${sub}`);
+      process.exit(1);
+  }
+}
+
+async function cmdEntitiesList(args: string[]) {
+  let type: string | undefined;
+  let q: string | undefined;
+  let sort: 'recent' | 'mentions' | 'alpha' = 'recent';
+  let limit = 50;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--type' && args[i + 1]) type = args[++i];
+    else if (a === '--q' && args[i + 1]) q = args[++i];
+    else if (a === '--sort' && args[i + 1]) {
+      const s = args[++i];
+      if (s === 'recent' || s === 'mentions' || s === 'alpha') sort = s;
+    } else if (a === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(500, v));
+    }
+  }
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.listEntities !== 'function') {
+    console.error('This provider does not support entities (hosted-only — use the SDK / dashboard).');
+    process.exit(1);
+  }
+
+  const entities = await provider.listEntities({ type, q, sort, limit });
+  if (entities.length === 0) {
+    console.log('No entities yet. Save some memories with entity extraction enabled and they\'ll appear here.');
+    return;
+  }
+  // Pretty table. Truncate display_name + alias preview so 80-col terminals stay clean.
+  const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  const fmt = (d: number) => new Date(d).toISOString().slice(0, 10);
+  console.log(
+    'id'.padEnd(38) +
+      'type'.padEnd(14) +
+      'name'.padEnd(30) +
+      'mentions'.padStart(10) +
+      '  last seen',
+  );
+  console.log('-'.repeat(110));
+  for (const e of entities) {
+    console.log(
+      e.id.padEnd(38) +
+        trunc(e.entity_type, 12).padEnd(14) +
+        trunc(e.display_name, 28).padEnd(30) +
+        String(e.mention_count).padStart(10) +
+        '  ' +
+        fmt(e.last_seen_at),
+    );
+  }
+  console.log(`\n${entities.length} entit${entities.length === 1 ? 'y' : 'ies'} shown.`);
+}
+
+async function cmdEntitiesShow(args: string[]) {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!id) {
+    console.error('Usage: mnueron entities show <entity-id> [--memories <n>]');
+    process.exit(1);
+  }
+  let memLimit = 20;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--memories' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) memLimit = Math.max(1, Math.min(200, v));
+    }
+  }
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.getEntity !== 'function' || typeof provider.getEntityMemories !== 'function') {
+    console.error('This provider does not support entities.');
+    process.exit(1);
+  }
+
+  const entity = await provider.getEntity(id);
+  if (!entity) {
+    console.error(`Entity not found: ${id}`);
+    process.exit(1);
+  }
+
+  console.log(`# ${entity.display_name}`);
+  console.log(`  id:            ${entity.id}`);
+  console.log(`  type:          ${entity.entity_type}`);
+  console.log(`  mentions:      ${entity.mention_count}`);
+  console.log(`  first seen:    ${new Date(entity.first_seen_at).toISOString()}`);
+  console.log(`  last seen:     ${new Date(entity.last_seen_at).toISOString()}`);
+  if (entity.aliases.length > 0) {
+    console.log(`  aliases:       ${entity.aliases.join(', ')}`);
+  }
+
+  const memories = await provider.getEntityMemories(entity.id, memLimit);
+  console.log(`\n## Linked memories (${memories.length}${memories.length >= memLimit ? '+' : ''})`);
+  for (const m of memories) {
+    const date = new Date(m.created_at).toISOString().slice(0, 10);
+    const preview = m.content.replace(/\s+/g, ' ').slice(0, 100);
+    const conf = m.confidence === 1 ? 'exact' : m.confidence.toFixed(2);
+    console.log(`  - [${date}] (${conf}) "${m.surface_form}" — ${preview}${m.content.length > 100 ? '…' : ''}`);
+    console.log(`      memory: ${m.id}  ns: ${m.namespace}`);
+  }
+}
+
+async function cmdEntitiesMerge(args: string[]) {
+  let winner: string | undefined;
+  let loser: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--winner' && args[i + 1]) winner = args[++i];
+    else if (args[i] === '--loser' && args[i + 1]) loser = args[++i];
+  }
+  if (!winner || !loser) {
+    console.error('Usage: mnueron entities merge --winner <id> --loser <id>');
+    process.exit(1);
+  }
+  if (winner === loser) {
+    console.error('Winner and loser must be different entities.');
+    process.exit(1);
+  }
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.mergeEntities !== 'function') {
+    console.error('This provider does not support entities.');
+    process.exit(1);
+  }
+  const merged = await provider.mergeEntities(winner, loser);
+  if (!merged) {
+    console.error('Merge failed — one or both entities not found.');
+    process.exit(1);
+  }
+  console.log(`✅ Merged. Winner: ${merged.display_name} (${merged.id})`);
+  console.log(`   aliases now:  ${merged.aliases.join(', ')}`);
+  console.log(`   mention count: ${merged.mention_count}`);
+}
+
+/**
+ * P3 + P4 — `mnueron graph <show|traverse|relations>`
+ *
+ *   show <entity-id>             — overview: entity + its direct relations.
+ *   traverse <entity-id>         — BFS out to --depth hops (default 2).
+ *   relations [--from <id>] [--to <id>] [--predicate <p>] [--as-of <iso>]
+ *                                — raw edge query. Useful for scripting.
+ *
+ * All three accept `--as-of <ISO-date>` for bi-temporal queries: "what
+ * relationships were valid at that point in time?" Falls through to "all
+ * relations" when --as-of isn't passed.
+ */
+async function cmdGraph(args: string[]) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'show':      return cmdGraphShow(rest);
+    case 'traverse':  return cmdGraphTraverse(rest);
+    case 'relations': return cmdGraphRelations(rest);
+    case undefined:
+    case '--help':
+    case '-h':
+      console.log(
+        'Usage:\n' +
+          '  mnueron graph show <entity-id> [--as-of <ISO-date>]\n' +
+          '  mnueron graph traverse <entity-id> [--depth <n>] [--as-of <ISO-date>]\n' +
+          '  mnueron graph relations [--from <id>] [--to <id>] [--predicate <p>] [--as-of <ISO-date>] [--limit <n>]\n\n' +
+          'The --as-of flag enables bi-temporal recall ("what was true at that date").\n' +
+          'Example: mnueron graph traverse ent-john --depth 3 --as-of 2025-04-01',
+      );
+      return;
+    default:
+      console.error(`Unknown graph subcommand: ${sub}`);
+      process.exit(1);
+  }
+}
+
+/** Parse --as-of <ISO> into epoch ms, or undefined when absent. */
+function parseAsOf(args: string[]): number | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--as-of' && args[i + 1]) {
+      const t = Date.parse(args[i + 1]);
+      if (!Number.isFinite(t)) {
+        console.error(`Invalid --as-of date: ${args[i + 1]}`);
+        process.exit(1);
+      }
+      return t;
+    }
+  }
+  return undefined;
+}
+
+async function cmdGraphShow(args: string[]) {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!id) {
+    console.error('Usage: mnueron graph show <entity-id> [--as-of <ISO-date>]');
+    process.exit(1);
+  }
+  const asOf = parseAsOf(args);
+
+  const provider = makeProvider(loadConfig());
+  if (
+    typeof provider.getEntity !== 'function' ||
+    typeof provider.getRelations !== 'function'
+  ) {
+    console.error('This provider does not support the knowledge graph.');
+    process.exit(1);
+  }
+
+  const entity = await provider.getEntity(id);
+  if (!entity) {
+    console.error(`Entity not found: ${id}`);
+    process.exit(1);
+  }
+  console.log(`# ${entity.display_name}  (${entity.entity_type})`);
+  console.log(`  id: ${entity.id}`);
+  if (asOf) console.log(`  as of: ${new Date(asOf).toISOString()}`);
+
+  const outgoing = await provider.getRelations({ fromEntityId: id, asOf, limit: 200 });
+  const incoming = await provider.getRelations({ toEntityId: id,  asOf, limit: 200 });
+
+  console.log(`\n## Outgoing (${outgoing.length})`);
+  for (const rel of outgoing) {
+    const target = await provider.getEntity!(rel.to_entity_id);
+    const targetName = target?.display_name ?? rel.to_entity_id;
+    console.log(`  -[${rel.predicate}]-> ${targetName}  (conf ${rel.confidence.toFixed(2)}${formatWindow(rel)})`);
+  }
+
+  console.log(`\n## Incoming (${incoming.length})`);
+  for (const rel of incoming) {
+    const source = await provider.getEntity!(rel.from_entity_id);
+    const sourceName = source?.display_name ?? rel.from_entity_id;
+    console.log(`  ${sourceName} -[${rel.predicate}]-> ${entity.display_name}  (conf ${rel.confidence.toFixed(2)}${formatWindow(rel)})`);
+  }
+}
+
+async function cmdGraphTraverse(args: string[]) {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!id) {
+    console.error('Usage: mnueron graph traverse <entity-id> [--depth <n>] [--as-of <ISO-date>]');
+    process.exit(1);
+  }
+  let depth = 2;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--depth' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) depth = Math.max(0, Math.min(5, v));
+    }
+  }
+  const asOf = parseAsOf(args);
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.traverseGraph !== 'function') {
+    console.error('This provider does not support the knowledge graph.');
+    process.exit(1);
+  }
+  const hops = await provider.traverseGraph(id, { depth, asOf });
+  if (hops.length === 0) {
+    console.error(`Entity not found: ${id}`);
+    process.exit(1);
+  }
+  console.log(`# Traversal from ${hops[0].entity.display_name}  depth=${depth}${asOf ? `  as-of=${new Date(asOf).toISOString()}` : ''}`);
+  for (const hop of hops) {
+    const indent = '  '.repeat(hop.depth);
+    if (hop.depth === 0) {
+      console.log(`${indent}● ${hop.entity.display_name} (${hop.entity.entity_type})`);
+    } else {
+      const arrow = hop.direction === 'out' ? '→' : '←';
+      const pred = hop.via?.predicate ?? '?';
+      console.log(`${indent}${arrow} [${pred}] ${hop.entity.display_name} (${hop.entity.entity_type})${formatWindow(hop.via)}`);
+    }
+  }
+  console.log(`\n${hops.length} node${hops.length === 1 ? '' : 's'} visited.`);
+}
+
+async function cmdGraphRelations(args: string[]) {
+  let from: string | undefined;
+  let to: string | undefined;
+  let predicate: string | undefined;
+  let limit = 100;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from' && args[i + 1]) from = args[++i];
+    else if (args[i] === '--to' && args[i + 1]) to = args[++i];
+    else if (args[i] === '--predicate' && args[i + 1]) predicate = args[++i];
+    else if (args[i] === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(1000, v));
+    }
+  }
+  const asOf = parseAsOf(args);
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.getRelations !== 'function') {
+    console.error('This provider does not support the knowledge graph.');
+    process.exit(1);
+  }
+  const rels = await provider.getRelations({ fromEntityId: from, toEntityId: to, predicate, asOf, limit });
+  console.log(JSON.stringify(rels, null, 2));
+}
+
+/** Human-readable validity window: " (valid 2022→2025)" or "" if none. */
+function formatWindow(rel: { valid_from: number | null; valid_to: number | null } | null | undefined): string {
+  if (!rel) return '';
+  if (rel.valid_from == null && rel.valid_to == null) return '';
+  const f = rel.valid_from ? new Date(rel.valid_from).toISOString().slice(0, 10) : '?';
+  const t = rel.valid_to   ? new Date(rel.valid_to).toISOString().slice(0, 10)   : 'now';
+  return `  (${f}→${t})`;
+}
+
+/**
+ * P5 — `mnueron consolidate <detect|review|list|approve|reject>`
+ *
+ * Phase 5a is detection-only — no automatic mutation of memories. The
+ * detector finds likely-duplicate pairs via embedding similarity and
+ * enqueues them as proposals. The user reviews from the dashboard or
+ * via these CLI commands.
+ *
+ *   detect              run the duplicate scan
+ *   list                show pending proposals
+ *   approve <id>        mark approved (5b will act on this; 5a just records the decision)
+ *   reject  <id>        mark rejected
+ */
+async function cmdConsolidate(args: string[]) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'detect':   return cmdConsolidateDetect(rest);
+    case 'list':     return cmdConsolidateList(rest);
+    case 'approve':  return cmdConsolidateReview(rest, 'approved');
+    case 'reject':   return cmdConsolidateReview(rest, 'rejected');
+    case undefined:
+    case '--help':
+    case '-h':
+      console.log(
+        'Usage:\n' +
+          '  mnueron consolidate detect   [--limit <n>] [--threshold <0..1>] [--ns <name>]\n' +
+          '  mnueron consolidate list     [--status pending|approved|rejected] [--limit <n>]\n' +
+          '  mnueron consolidate approve <proposal-id>\n' +
+          '  mnueron consolidate reject  <proposal-id>\n\n' +
+          'Phase 5a — DETECTION ONLY. Approving a proposal records the decision\n' +
+          'but does not yet merge memories. Phase 5b will action approved merges.',
+      );
+      return;
+    default:
+      console.error(`Unknown consolidate subcommand: ${sub}`);
+      process.exit(1);
+  }
+}
+
+async function cmdConsolidateDetect(args: string[]) {
+  let limit = 200;
+  let threshold: number | undefined;
+  let namespace: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(5000, v));
+    } else if (args[i] === '--threshold' && args[i + 1]) {
+      const v = parseFloat(args[++i]);
+      if (Number.isFinite(v) && v >= 0 && v <= 1) threshold = v;
+    } else if (args[i] === '--ns' && args[i + 1]) {
+      namespace = args[++i];
+    }
+  }
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.detectConsolidation !== 'function') {
+    console.error('This provider does not support consolidation (hosted-only — use the SDK).');
+    process.exit(1);
+  }
+  console.log(`Scanning up to ${limit} memories${namespace ? ` in namespace "${namespace}"` : ''}...`);
+  const result = await provider.detectConsolidation({ limit, threshold, namespace });
+  console.log(
+    `consolidate detect done — scanned=${result.scanned} created=${result.proposalsCreated} already_known=${result.proposalsAlreadyKnown}`,
+  );
+  if (result.proposalsCreated > 0) {
+    console.log(`\nRun "mnueron consolidate list" to review pending proposals.`);
+  }
+}
+
+async function cmdConsolidateList(args: string[]) {
+  let status: 'pending' | 'approved' | 'rejected' | undefined = 'pending';
+  let limit = 50;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--status' && args[i + 1]) {
+      const s = args[++i];
+      if (s === 'pending' || s === 'approved' || s === 'rejected') status = s;
+      else if (s === 'all') status = undefined;
+    } else if (args[i] === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(500, v));
+    }
+  }
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.proposalsList !== 'function') {
+    console.error('This provider does not support consolidation.');
+    process.exit(1);
+  }
+  const props = await provider.proposalsList({ status, limit });
+  if (props.length === 0) {
+    console.log(`No ${status ?? ''} proposals.`);
+    return;
+  }
+  const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  console.log(
+    'id'.padEnd(38) +
+      'kind'.padEnd(14) +
+      'score'.padStart(6) +
+      '  ' +
+      'memory_a → memory_b',
+  );
+  console.log('-'.repeat(110));
+  for (const p of props) {
+    console.log(
+      p.id.padEnd(38) +
+        trunc(p.kind, 12).padEnd(14) +
+        p.score.toFixed(2).padStart(6) +
+        '  ' +
+        `${p.memory_a_id.slice(0, 8)} → ${p.memory_b_id.slice(0, 8)}` +
+        (p.status !== 'pending' ? `  [${p.status}]` : ''),
+    );
+  }
+  console.log(`\n${props.length} proposal${props.length === 1 ? '' : 's'}.`);
+}
+
+async function cmdConsolidateReview(
+  args: string[],
+  decision: 'approved' | 'rejected',
+) {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!id) {
+    console.error(`Usage: mnueron consolidate ${decision === 'approved' ? 'approve' : 'reject'} <proposal-id>`);
+    process.exit(1);
+  }
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.proposalReview !== 'function') {
+    console.error('This provider does not support consolidation.');
+    process.exit(1);
+  }
+  const updated = await provider.proposalReview(id, decision);
+  if (!updated) {
+    console.error(`Proposal not found: ${id}`);
+    process.exit(1);
+  }
+  console.log(`✅ Proposal ${id} marked ${decision}.`);
+}
+
+async function cmdWatch(args: string[]) {
+  // For now the only mode is `--claude-cowork`. Future modes can dispatch here.
+  if (!args.includes('--claude-cowork')) {
+    console.error('Usage: mnueron watch --claude-cowork [--interval <minutes>] [--ns <name>] [--once]');
+    process.exit(1);
+  }
+  let intervalMs: number | undefined;
+  let ns = 'claude-cowork';
+  let once = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--interval' && args[i + 1]) {
+      const n = Number(args[++i]);
+      if (Number.isFinite(n) && n > 0) intervalMs = Math.floor(n * 60 * 1000);
+    } else if (a === '--ns' && args[i + 1]) {
+      ns = args[++i];
+    } else if (a === '--once') {
+      once = true;
+    }
+  }
+
+  const { runCoworkWatch } = await import('./watch/cowork.js');
+  const provider = makeProvider(loadConfig());
+  try {
+    await runCoworkWatch(provider, { intervalMs, namespace: ns, once });
+  } finally {
+    await provider.close();
+  }
+}
+
+main().catch((e) => {
+  console.error(e?.stack ?? e);
+  process.exit(1);
+});
+s.exit(1);
+  }
+  console.log(`✅ Proposal ${id} marked ${decision}.`);
 }
 
 async function cmdWatch(args: string[]) {

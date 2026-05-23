@@ -1,0 +1,30 @@
+{
+  "name": "mnueron",
+  "displayName": "mnueron — persistent memory",
+  "version": "0.2.6",
+  "description": "Persistent memory layer for Cowork. Every chat (including Cowork sessions, claude.ai history, OpenAI exports) becomes searchable memory that any future Claude session can recall via the memory_recall MCP tool.",
+  "author": {
+    "name": "randy",
+    "email": "khemlall.mangal@gmail.com",
+    "url": "https://www.mnueron.com"
+  },
+  "homepage": "https://www.mnueron.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/randi2160/mnueron"
+  },
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "mcp",
+    "persistent-memory",
+    "cowork",
+    "claude-code",
+    "context",
+    "rag"
+  ],
+  "categories": [
+    "productivity",
+    "memory"
+  ]
+}

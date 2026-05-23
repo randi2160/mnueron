@@ -1,8 +1,12 @@
 # Chrome Web Store listing — mnueron extension
 
 Everything you need to copy-paste into the Chrome Web Store Developer
-Dashboard when submitting v0.2.0. Keep this file in sync with the live
+Dashboard when submitting v0.2.6. Keep this file in sync with the live
 listing so the next submission is one diff away from ready.
+
+**Permissions changed in v0.2.6:** `scripting` was removed — the only
+permissions to justify are `storage`, `activeTab`, `tabs`, and the host
+permissions below.
 
 ---
 
@@ -89,11 +93,6 @@ API token, and only when contacting their own mnueron backend.
 Required so the popup's "Capture this chat" button can read the current
 tab's conversation when the user clicks. activeTab grants access only when
 the user explicitly invokes the extension — not in the background.
-
-### `scripting`
-Required to inject the content-script "Capture now" action when the user
-clicks the popup button. Scripts only run on the four supported AI domains
-declared in `content_scripts`.
 
 ### `tabs`
 Used to detect which supported AI site is open in the active tab so the

@@ -39,6 +39,7 @@ async function main() {
     case 'entities':     return cmdEntities(rest);  // P2.3 — list/show/merge
     case 'graph':        return cmdGraph(rest);     // P3 + P4 — knowledge graph
     case 'consolidate':  return cmdConsolidate(rest); // P5 — detection-only review queue
+    case 'procedural':   return cmdProcedural(rest);  // Procedural memory (Mem0 leapfrog)
     case 'watch':        return cmdWatch(rest);
     case 'help':
     case '--help':
@@ -1807,6 +1808,253 @@ async function cmdConsolidateReview(
     process.exit(1);
   }
   console.log(`✅ Proposal ${id} marked ${decision}.`);
+}
+
+/**
+ * Procedural memory CLI — `mnueron procedural <sub>`
+ *
+ * The "remembered workflows" feature. Mem0 doesn't ship this — semantic +
+ * episodic only. Procedural memory captures step-by-step runbooks so an
+ * agent (or you) can recall "how do I deploy the API" and get the same
+ * sequence of steps that worked last time.
+ *
+ *   save <name> --steps "..."        Save explicit steps (JSON file or stdin)
+ *   save <name> --from-memory <id>   LLM-extract steps from an existing memory
+ *   list                             Show all procedural memories
+ *   show <name>                      Print the full runbook
+ *   recall <name>                    Same as show; bumps last_used_at
+ *   delete <id>                      Hard-delete a procedural memory
+ */
+async function cmdProcedural(args: string[]) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'save':    return cmdProceduralSave(rest);
+    case 'list':    return cmdProceduralList(rest);
+    case 'show':
+    case 'recall':  return cmdProceduralShow(rest, sub === 'recall');
+    case 'delete':  return cmdProceduralDelete(rest);
+    case undefined:
+    case '--help':
+    case '-h':
+      console.log(
+        'Usage:\n' +
+          '  mnueron procedural save <name> --from-memory <memory-id> [--ns <name>]\n' +
+          '  mnueron procedural save <name> --steps-file <path.json> [--ns <name>] [--summary "..."]\n' +
+          '  mnueron procedural list   [--ns <name>] [--limit <n>]\n' +
+          '  mnueron procedural show   <name> [--ns <name>]\n' +
+          '  mnueron procedural recall <name> [--ns <name>]   (same as show, bumps last_used_at)\n' +
+          '  mnueron procedural delete <id>\n\n' +
+          'Examples:\n' +
+          '  mnueron procedural save deploy-api --from-memory abc-123\n' +
+          '  mnueron procedural recall deploy-api',
+      );
+      return;
+    default:
+      console.error(`Unknown procedural subcommand: ${sub}`);
+      process.exit(1);
+  }
+}
+
+async function cmdProceduralSave(args: string[]) {
+  const name = args.find((a) => !a.startsWith('--'));
+  if (!name) {
+    console.error('Usage: mnueron procedural save <name> [--from-memory <id> | --steps-file <path>] [--ns <name>] [--summary "..."]');
+    process.exit(1);
+  }
+  let fromMemory: string | undefined;
+  let stepsFile: string | undefined;
+  let ns: string | undefined;
+  let summary: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from-memory' && args[i + 1]) fromMemory = args[++i];
+    else if (args[i] === '--steps-file' && args[i + 1]) stepsFile = args[++i];
+    else if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+    else if (args[i] === '--summary' && args[i + 1]) summary = args[++i];
+  }
+
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.saveProcedural !== 'function') {
+    console.error('This provider does not support procedural memory.');
+    process.exit(1);
+  }
+
+  if (fromMemory) {
+    // LLM-extract path: pull the memory's content and ask Haiku/OpenAI
+    // to turn it into a runbook, then save the result.
+    if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+      console.error('--from-memory requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.');
+      process.exit(1);
+    }
+    if (typeof provider.get !== 'function') {
+      console.error('Provider does not support memory.get.');
+      process.exit(1);
+    }
+    const memory = await provider.get(fromMemory);
+    if (!memory) {
+      console.error(`Memory not found: ${fromMemory}`);
+      process.exit(1);
+    }
+    const { extractProcedural } = await import('./store/procedural.js');
+    console.log('Extracting procedural memory via LLM…');
+    const extracted = await extractProcedural(memory.content, {});
+    if (!extracted) {
+      console.error('Could not extract a procedural memory from that content. Use --steps-file for explicit input.');
+      process.exit(1);
+    }
+    const saved = await provider.saveProcedural({
+      name: name,
+      namespace: ns,
+      summary: summary ?? extracted.summary,
+      steps: extracted.steps,
+      tools: extracted.tools,
+    });
+    console.log(`✅ Saved procedural memory "${saved.name}" (${saved.steps.length} steps)`);
+    return;
+  }
+
+  if (stepsFile) {
+    const fs = await import('node:fs/promises');
+    let raw: string;
+    try { raw = await fs.readFile(stepsFile, 'utf8'); }
+    catch (e) {
+      console.error(`Could not read ${stepsFile}: ${e instanceof Error ? e.message : e}`);
+      process.exit(1);
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); }
+    catch (e) {
+      console.error('Steps file must be valid JSON.');
+      process.exit(1);
+    }
+    if (!Array.isArray(parsed)) {
+      console.error('Steps file must be a JSON array of { step, code?, why? } objects.');
+      process.exit(1);
+    }
+    const steps = (parsed as Array<{ step?: unknown; code?: unknown; why?: unknown }>)
+      .filter((s) => s && typeof s.step === 'string')
+      .map((s) => ({
+        step: String(s.step).trim(),
+        code: typeof s.code === 'string' ? s.code : undefined,
+        why: typeof s.why === 'string' ? s.why : undefined,
+      }));
+    if (steps.length === 0) {
+      console.error('No valid steps found in file.');
+      process.exit(1);
+    }
+    const saved = await provider.saveProcedural({
+      name,
+      namespace: ns,
+      summary: summary ?? '',
+      steps,
+    });
+    console.log(`✅ Saved procedural memory "${saved.name}" (${saved.steps.length} steps)`);
+    return;
+  }
+
+  console.error('Either --from-memory <id> or --steps-file <path.json> is required.');
+  process.exit(1);
+}
+
+async function cmdProceduralList(args: string[]) {
+  let ns: string | undefined;
+  let limit = 50;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+    else if (args[i] === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(500, v));
+    }
+  }
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.listProcedural !== 'function') {
+    console.error('This provider does not support procedural memory.');
+    process.exit(1);
+  }
+  const list = await provider.listProcedural({ namespace: ns, limit });
+  if (list.length === 0) {
+    console.log('No procedural memories yet. Use `mnueron procedural save` to create one.');
+    return;
+  }
+  const trunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  const fmt = (d: number) => new Date(d).toISOString().slice(0, 10);
+  console.log(
+    'name'.padEnd(28) +
+      'steps'.padStart(6) +
+      'used'.padStart(6) +
+      '  ' +
+      'last used'.padEnd(12) +
+      'summary',
+  );
+  console.log('-'.repeat(110));
+  for (const p of list) {
+    console.log(
+      trunc(p.name, 26).padEnd(28) +
+        String(p.steps.length).padStart(6) +
+        String(p.use_count).padStart(6) +
+        '  ' +
+        fmt(p.last_used_at).padEnd(12) +
+        trunc(p.summary, 60),
+    );
+  }
+}
+
+async function cmdProceduralShow(args: string[], bump: boolean) {
+  const name = args.find((a) => !a.startsWith('--'));
+  if (!name) {
+    console.error('Usage: mnueron procedural show <name> [--ns <name>]');
+    process.exit(1);
+  }
+  let ns: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ns' && args[i + 1]) ns = args[++i];
+  }
+  const provider = makeProvider(loadConfig());
+  const fn = bump ? provider.recallProcedural : provider.getProcedural;
+  if (typeof fn !== 'function') {
+    console.error('This provider does not support procedural memory.');
+    process.exit(1);
+  }
+  const p = await fn.call(provider, name, ns);
+  if (!p) {
+    console.error(`Procedural memory not found: "${name}"${ns ? ` in namespace "${ns}"` : ''}`);
+    process.exit(1);
+  }
+  console.log(`# ${p.name}\n`);
+  if (p.summary) console.log(`  ${p.summary}\n`);
+  console.log(`  id: ${p.id}`);
+  console.log(`  ns: ${p.namespace}`);
+  console.log(`  used: ${p.use_count} time${p.use_count === 1 ? '' : 's'}`);
+  console.log(`  last used: ${new Date(p.last_used_at).toISOString()}\n`);
+
+  console.log('## Steps');
+  p.steps.forEach((s, i) => {
+    console.log(`  ${i + 1}. ${s.step}`);
+    if (s.code) console.log(`       $ ${s.code}`);
+    if (s.why) console.log(`       — ${s.why}`);
+  });
+
+  if (p.tools.length > 0) {
+    console.log(`\n## Tools used\n  ${p.tools.join(', ')}`);
+  }
+}
+
+async function cmdProceduralDelete(args: string[]) {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!id) {
+    console.error('Usage: mnueron procedural delete <id>');
+    process.exit(1);
+  }
+  const provider = makeProvider(loadConfig());
+  if (typeof provider.deleteProcedural !== 'function') {
+    console.error('This provider does not support procedural memory.');
+    process.exit(1);
+  }
+  const ok = await provider.deleteProcedural(id);
+  if (!ok) {
+    console.error('Procedural memory not found.');
+    process.exit(1);
+  }
+  console.log('✅ Deleted.');
 }
 
 async function cmdWatch(args: string[]) {

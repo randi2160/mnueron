@@ -13,6 +13,11 @@ import {
   type ConsolidationProposal, type ScanOptions, type ScanResult,
   type ProposalListOptions,
 } from './consolidator.js';
+import {
+  ensureProceduralSchema, saveProcedural, getProceduralByName,
+  getProceduralById, listProcedural, recallProcedural, deleteProcedural,
+  type ProceduralMemory, type SaveProceduralInput,
+} from './procedural.js';
 import { redact } from './redactor.js';
 import type {
   Provider, Memory, SaveMemoryInput, SearchInput, ListInput, NamespaceInfo,
@@ -323,6 +328,9 @@ export class LocalProvider implements Provider {
 
     // P5 — Consolidation proposal table (idempotent).
     ensureConsolidationSchema(this.db);
+
+    // Procedural memory table (idempotent). Mem0 leapfrog feature.
+    ensureProceduralSchema(this.db);
   }
 
   // ─── write path ──────────────────────────────────────────────────────────
@@ -1299,6 +1307,28 @@ export class LocalProvider implements Provider {
     decision: 'approved' | 'rejected',
   ): Promise<ConsolidationProposal | null> {
     return reviewProposal(this.db, id, decision);
+  }
+
+  // ─── Procedural memory ──────────────────────────────────────────────────
+
+  async saveProcedural(input: SaveProceduralInput): Promise<ProceduralMemory> {
+    return saveProcedural(this.db, input);
+  }
+
+  async getProcedural(name: string, namespace?: string): Promise<ProceduralMemory | null> {
+    return getProceduralByName(this.db, name, namespace);
+  }
+
+  async listProcedural(opts: { namespace?: string; limit?: number } = {}): Promise<ProceduralMemory[]> {
+    return listProcedural(this.db, opts);
+  }
+
+  async recallProcedural(name: string, namespace?: string): Promise<ProceduralMemory | null> {
+    return recallProcedural(this.db, name, namespace);
+  }
+
+  async deleteProcedural(id: string): Promise<boolean> {
+    return deleteProcedural(this.db, id);
   }
 
   async close() {

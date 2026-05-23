@@ -10,6 +10,44 @@ messages and PR descriptions.
 These are in the repo on `main` but not yet published to npm. The next
 `npm publish` will bundle them as a minor or patch bump.
 
+### Added (Procedural memory — Mem0 leapfrog)
+- **Procedural memory** — a third memory type alongside semantic + episodic.
+  Captures step-by-step runbooks ("how to deploy the API") that can be
+  recalled by name. Mem0/Letta/Zep don't ship this; this is a competitive
+  differentiator.
+- **`mnueron procedural <save|list|show|recall|delete>`** — CLI surface.
+  Save explicit steps from a JSON file or LLM-extract a runbook from an
+  existing memory via `--from-memory <id>`.
+- New table: `procedural_memories` (id, namespace, name, summary,
+  steps_json, tools_json, last_used_at, use_count). Unique on
+  (namespace, lower(name)) so each name resolves deterministically.
+- Provider methods: `saveProcedural`, `getProcedural`, `listProcedural`,
+  `recallProcedural` (bumps last_used_at + use_count), `deleteProcedural`.
+
+### Added (P2.3 — Entity-resolution backfill CLI)
+- **`mnueron entities backfill`** — retro-fit canonical IDs onto memories
+  saved before the resolver shipped. Flags: `--ns`, `--limit`, `--since`,
+  `--extract` (also run extraction for memories with no entities),
+  `--dry-run`, `--force` (re-resolve already-resolved).
+- New provider method `backfillResolveMemory` — runs the resolver against
+  an existing memory's entities and writes the resulting canonical_ids
+  back to metadata.
+- Verbose error reporting on backfill failures (silent failures hid a
+  schema bug previously — see fix below).
+
+### Fixed
+- **Local update() referenced wrong column names.** `tags` / `metadata`
+  → `tags_json` / `meta_json`. Pre-existing bug surfaced by the
+  backfill path. Silent SQLite "no such column" was eating every
+  metadata-only update.
+
+### Tightened
+- **Entity extractor prompt** (both local and hosted). Added strong
+  inclusion criteria + explicit exclusion list to cut noise like
+  "Step 1 view file", "DB-backed", "server-side validation", and
+  hostnames classified as "place". Returns [] when fewer than 2
+  high-quality entities exist — better to skip than fill with noise.
+
 ### Added (P2.3 — Local SQLite entity resolution)
 - **Local entity resolution** matches the hosted `/api/entities` capability:
   when entity extraction (P1) stamps `metadata.entities` on a save, the

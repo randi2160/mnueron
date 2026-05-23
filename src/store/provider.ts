@@ -187,6 +187,34 @@ export interface ConsolidationScanResult {
   proposalsAlreadyKnown: number;
 }
 
+// ─── Procedural memory ────────────────────────────────────────────────────
+
+export interface ProceduralStep {
+  step: string;
+  code?: string;
+  why?: string;
+}
+
+export interface ProceduralMemoryView {
+  id: string;
+  namespace: string;
+  name: string;
+  summary: string;
+  steps: ProceduralStep[];
+  tools: string[];
+  last_used_at: number;
+  use_count: number;
+  created_at: number;
+}
+
+export interface SaveProceduralInputView {
+  name: string;
+  namespace?: string;
+  summary?: string;
+  steps: ProceduralStep[];
+  tools?: string[];
+}
+
 // ─── Provider contract ─────────────────────────────────────────────────────
 
 export interface Provider {
@@ -281,6 +309,18 @@ export interface Provider {
     id: string,
     decision: 'approved' | 'rejected',
   ): Promise<ConsolidationProposal | null>;
+
+  // ── Procedural memory (Mem0-leapfrog feature) ────────────────────────
+  /** Save (UPSERT) a procedural memory keyed by (namespace, name). */
+  saveProcedural?(input: SaveProceduralInputView): Promise<ProceduralMemoryView>;
+  /** Look up a procedural memory by name within a namespace. */
+  getProcedural?(name: string, namespace?: string): Promise<ProceduralMemoryView | null>;
+  /** List procedural memories, most-recently-used first. */
+  listProcedural?(opts?: { namespace?: string; limit?: number }): Promise<ProceduralMemoryView[]>;
+  /** Recall — bump last_used_at + use_count and return the runbook. */
+  recallProcedural?(name: string, namespace?: string): Promise<ProceduralMemoryView | null>;
+  /** Hard-delete a procedural memory by id. */
+  deleteProcedural?(id: string): Promise<boolean>;
 
   close(): Promise<void>;
 }

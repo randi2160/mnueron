@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/promo-large-dark.png" alt="mnueron — memory for every AI" width="420" />
+  <img src="https://raw.githubusercontent.com/randi2160/mnueron/main/assets/promo-large-dark.png" alt="mnueron — memory for every AI" width="420" />
 </p>
 
 <p align="center"><strong>One memory layer. Every LLM. Every dev tool. Every app you build.</strong></p>

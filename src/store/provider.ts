@@ -219,6 +219,21 @@ export interface Provider {
    */
   mergeEntities?(winnerId: string, loserId: string): Promise<Entity | null>;
 
+  /**
+   * P2.3 backfill helper — run the resolver against entities already
+   * stored in `metadata.entities` of an existing memory. Populates the
+   * `entities` and `memory_entities` tables, and returns the resolutions
+   * so the caller can stamp `canonical_id` onto the memory's metadata.
+   *
+   * Used by `mnueron entities backfill` to retro-fit canonical IDs onto
+   * memories that were saved before the resolver shipped.
+   */
+  backfillResolveMemory?(
+    memoryId: string,
+    extracted: Array<{ name: string; type: string; context?: string }>,
+    opts?: { anthropicKey?: string },
+  ): Promise<Array<{ canonical_id: string; confidence: number; created: boolean } | null>>;
+
   // ── P3 + P4 — Knowledge graph ────────────────────────────────────────
   /**
    * Fetch relation edges with optional filters (from/to/predicate) and

@@ -869,11 +869,14 @@ export class LocalProvider implements Provider {
     const existing = this.db.prepare(`SELECT * FROM memories WHERE id = ?`).get(id) as any;
     if (!existing) return null;
 
-    // Build merged metadata + history entry
+    // Build merged metadata + history entry. Note: the column is `meta_json`,
+    // not `metadata` (same schema mismatch that broke updates before P2.3
+    // backfill ran).
+    const metaCol = existing.meta_json ?? existing.metadata;
     const priorMeta: Record<string, unknown> =
-      typeof existing.metadata === 'string'
-        ? (JSON.parse(existing.metadata || '{}') as Record<string, unknown>)
-        : (existing.metadata ?? {});
+      typeof metaCol === 'string'
+        ? (JSON.parse(metaCol || '{}') as Record<string, unknown>)
+        : (metaCol ?? {});
     const merged: Record<string, unknown> = { ...priorMeta };
     if (patch.metadata && typeof patch.metadata === 'object') {
       for (const [k, v] of Object.entries(patch.metadata)) {
@@ -896,15 +899,16 @@ export class LocalProvider implements Provider {
     }
 
     const nextNs   = patch.namespace ?? existing.namespace;
-    const nextTags = patch.tags      ?? JSON.parse(existing.tags ?? '[]');
+    const nextTags = patch.tags
+      ?? JSON.parse((existing.tags_json ?? existing.tags) ?? '[]');
     const now = Date.now();
 
     this.db.prepare(
       `UPDATE memories
-          SET content   = ?,
-              namespace = ?,
-              tags      = ?,
-              metadata  = ?,
+          SET content    = ?,
+              namespace  = ?,
+              tags_json  = ?,
+              meta_json  = ?,
               updated_at = ?
         WHERE id = ?`,
     ).run(
@@ -1138,6 +1142,29 @@ export class LocalProvider implements Provider {
     tx();
 
     return this.getEntity(winnerId);
+  }
+
+  /**
+   * P2.3 backfill — run the resolver against entities that already exist
+   * in a saved memory's metadata.entities. Used by
+   * `mnueron entities backfill` to retro-fit canonical IDs onto memories
+   * saved before the resolver shipped. Returns the resolutions parallel
+   * to `extracted` so the caller can update metadata.
+   */
+  async backfillResolveMemory(
+    memoryId: string,
+    extracted: Array<{ name: string; type: string; context?: string }>,
+    opts: { anthropicKey?: string } = {},
+  ): Promise<Array<{ canonical_id: string; confidence: number; created: boolean } | null>> {
+    if (extracted.length === 0) return [];
+    const res = await resolveEntitiesForMemory(
+      this.db,
+      memoryId,
+      extracted,
+      this.vecAvailable,
+      { anthropicKey: opts.anthropicKey },
+    );
+    return res;
   }
 
   // ─── P3 + P4 — Knowledge graph API ──────────────────────────────────────

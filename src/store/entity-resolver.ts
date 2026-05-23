@@ -13,15 +13,21 @@
 //   1. Exact lowercase-name match (instant short-circuit, similarity = 1.0).
 //   2. Embedding vector search: top-K candidates by cosine.
 //   3. similarity ≥ HIGH (0.85) and matching type → reuse the canonical.
-//   4. similarity in [AMBIGUOUS_LOW, HIGH) → batch LLM tiebreak via Haiku.
+//   4. similarity in [AMBIGUOUS_LOW, HIGH) → batch LLM tiebreak (Haiku or
+//      gpt-4o-mini depending on which key is set).
 //   5. Otherwise → create a new canonical entity.
-//
-// Why same-type gating: a "person" named "John" should not merge with a
-// "project" called "John". This mirrors the hosted impl's WHERE clause.
 //
 // Fail-open: every error path returns null/empty for that specific entity.
 // The memory save still succeeds. Resolution can be re-run later via
 // `mnueron entities backfill`.
+//
+// IMPORTANT — TIER GATING (LOCAL vs HOSTED):
+// This is the LOCAL resolver. The LLM tiebreak falls through to
+// process.env keys unconditionally because the operator IS the user.
+// When mirroring this to the hosted backend, the env fallback MUST be
+// gated by `allowServerKey` (paid-tier only). See hosted entity-resolver
+// for the existing pattern; free orgs without BYOK fall through to
+// "create new" instead of consuming server LLM budget.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type Database from 'better-sqlite3';
@@ -36,6 +42,7 @@ const AMBIGUOUS_THRESHOLD = 0.65;
 /** Top-K candidates considered per entity. */
 const TIEBREAK_MAX_CANDIDATES = 3;
 const ANTHROPIC_MODEL = 'claude-haiku-4-5';
+const OPENAI_MODEL = 'gpt-4o-mini';
 const TIMEOUT_MS = 30000;
 
 export interface ResolvedEntity {
@@ -48,11 +55,9 @@ export interface ResolvedEntity {
 }
 
 export interface ResolveOptions {
-  /** BYOK Anthropic key for LLM tiebreak. If absent + no env var, ambiguous
-   *  cases fall through to "create new" (graceful degradation). */
+  /** BYOK Anthropic key for LLM tiebreak. */
   anthropicKey?: string;
-  /** Whether to consult the LLM at all. Defaults to true. Set false to keep
-   *  resolution fully deterministic (e.g., bulk backfill). */
+  /** Whether to consult the LLM at all. Defaults to true. */
   allowLLMTiebreak?: boolean;
 }
 
@@ -75,9 +80,6 @@ interface CandidateMatch {
  * Resolve every entity in `extracted` against the canonical entity store.
  * Returns the resolutions in the same order as `extracted`. Also writes
  * memory_entities edges and bumps mention bookkeeping.
- *
- * Pass the `vecAvailable` flag honestly — if sqlite-vec wasn't loaded at
- * provider startup, we skip the embedding stage and only do exact-name match.
  */
 export async function resolveEntitiesForMemory(
   db: Database.Database,
@@ -121,8 +123,6 @@ export async function resolveEntitiesForMemory(
         continue;
       }
     }
-    // Stage 5 deferred — we collect un-resolved ones and create new
-    // canonicals after the LLM tiebreak step decides what's truly new.
   }
 
   // Stage 4 — LLM tiebreak for ambiguous batch.
@@ -168,9 +168,7 @@ export async function resolveEntitiesForMemory(
     }
   }
 
-  // Stage 6 — bookkeeping: bump mention_count, last_seen_at, and add new
-  // surface forms to aliases (for reused entities only — created ones
-  // already start with their name as the lone alias).
+  // Stage 6 — bookkeeping: bump mention_count, last_seen_at, aliases.
   bumpReusedEntities(db, extracted, resolutions);
 
   // Stage 7 — insert memory_entities edges in one batch.
@@ -181,7 +179,6 @@ export async function resolveEntitiesForMemory(
 
 // ── Match strategies ────────────────────────────────────────────────────────
 
-/** O(1) exact (case-insensitive) name match within type. Returns null if none. */
 function findExactMatch(
   db: Database.Database,
   name: string,
@@ -200,15 +197,6 @@ function findExactMatch(
   return row ?? null;
 }
 
-/**
- * Top-K embedding candidates. Embeds `name :: context` (context disambiguates
- * homonyms — "Apple the company" vs "Apple the fruit") and vector-searches
- * the entities_vec table.
- *
- * Type-filters the results post-vector-search rather than pre-filtering at
- * SQL level — sqlite-vec doesn't support WHERE on indexed columns yet, so
- * we ask for a wider K and filter in JS.
- */
 async function findEmbeddingCandidates(
   db: Database.Database,
   entity: ExtractedEntity,
@@ -217,7 +205,6 @@ async function findEmbeddingCandidates(
   const vec = await embed(probe);
   if (!vec) return [];
 
-  // K=10 buffer so type-filter still leaves enough candidates.
   const rows = db
     .prepare<[Buffer, number]>(
       `SELECT entities_vec.entity_id AS id,
@@ -241,11 +228,6 @@ async function findEmbeddingCandidates(
       last_seen_at: number;
     }>;
 
-  // sqlite-vec returns L2 distance for float vectors. Convert to a
-  // similarity in [0, 1] for parity with the hosted resolver's cosine
-  // similarity. The normalized embeddings we use mean
-  //   cosine ≈ 1 - distance²/2
-  // and we clamp to [0, 1].
   const matches: CandidateMatch[] = rows
     .filter((r) => r.entity_type === entity.type)
     .map((r) => ({
@@ -290,7 +272,6 @@ async function createCanonicalEntity(
   return { id };
 }
 
-/** Bump mention_count + last_seen_at; add surface_form to aliases if new. */
 function bumpReusedEntities(
   db: Database.Database,
   extracted: ExtractedEntity[],
@@ -316,7 +297,7 @@ function bumpReusedEntities(
   const tx = db.transaction(() => {
     for (let i = 0; i < extracted.length; i++) {
       const r = resolutions[i];
-      if (!r || r.created) continue; // only bump reused, not freshly created
+      if (!r || r.created) continue;
       update.run(now, extracted[i].name, r.canonical_id, extracted[i].type);
     }
   });
@@ -353,24 +334,16 @@ interface AmbiguousCase {
 }
 
 /**
- * Batch tiebreak — one Haiku call decides every ambiguous case in a memory.
- *
- * The output is an array parallel to `cases`. Each element is either a
- * canonical_id string (the entity matched candidate at that index) OR
- * the literal string `"new"` meaning "create a fresh canonical."
- *
- * On any error path (missing key, HTTP failure, parse failure), we return
- * all-"new" — the safer default (worst case: a few duplicate canonicals
- * the user can merge later via `mnueron entities merge`).
+ * Batch tiebreak. Provider precedence:
+ *   1. BYOK anthropicKey → Haiku
+ *   2. env ANTHROPIC_API_KEY → Haiku
+ *   3. env OPENAI_API_KEY → gpt-4o-mini
+ *   4. none → all "new" (graceful degradation)
  */
 async function tiebreakWithLLM(
   cases: AmbiguousCase[],
   byokKey: string | undefined,
 ): Promise<Array<string | 'new'>> {
-  // Provider precedence mirrors entity-extractor.ts so users with only
-  // OPENAI_API_KEY (and no Anthropic) get a working tiebreak instead of
-  // falling through to all-"new". BYOK key (always Anthropic in this
-  // build) wins; then env Anthropic; then env OpenAI; then bail.
   const anthropicKey = byokKey || process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!anthropicKey && !openaiKey) return cases.map(() => 'new');
@@ -409,7 +382,10 @@ async function tiebreakWithLLM(
 }
 
 async function tiebreakViaAnthropic(
-  numbered: string, system: string, apiKey: string, cases: AmbiguousCase[],
+  numbered: string,
+  system: string,
+  apiKey: string,
+  cases: AmbiguousCase[],
 ): Promise<Array<string | 'new'> | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -451,7 +427,10 @@ async function tiebreakViaAnthropic(
 }
 
 async function tiebreakViaOpenAI(
-  numbered: string, system: string, apiKey: string, cases: AmbiguousCase[],
+  numbered: string,
+  system: string,
+  apiKey: string,
+  cases: AmbiguousCase[],
 ): Promise<Array<string | 'new'> | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -463,7 +442,7 @@ async function tiebreakViaOpenAI(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: OPENAI_MODEL,
         max_tokens: 800,
         temperature: 0.0,
         response_format: { type: 'json_object' },
@@ -525,76 +504,6 @@ function parseDecisions(
 }
 
 // ── Utility ─────────────────────────────────────────────────────────────────
-
-function clamp(n: number, lo: number, hi: number): number {
-  return n < lo ? lo : n > hi ? hi : n;
-}
-y({
-        model: 'gpt-4o-mini',
-        max_tokens: 800,
-        temperature: 0.0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: numbered },
-        ],
-      }),
-      signal: ctrl.signal,
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return parseDecisions(data.choices?.[0]?.message?.content ?? '', cases);
-  } catch (e) {
-    console.warn(
-      '[mnueron/entity-resolver/openai] tiebreak failed:',
-      e instanceof Error ? e.message : e,
-    );
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function parseDecisions(
-  raw: string,
-  cases: AmbiguousCase[],
-): Array<string | 'new'> {
-  const out: Array<string | 'new'> = cases.map(() => 'new');
-  let s = raw.trim();
-  if (s.startsWith('```')) s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const start = s.search(/[\[{]/);
-  if (start > 0) s = s.slice(start);
-
-  try {
-    const parsed = JSON.parse(s) as {
-      decisions?: Array<{ case?: number; match?: number | string }>;
-    };
-    for (const d of parsed.decisions ?? []) {
-      if (typeof d.case !== 'number') continue;
-      if (d.case < 0 || d.case >= cases.length) continue;
-      const m = d.match;
-      if (m === 'new' || m == null) {
-        out[d.case] = 'new';
-      } else if (
-        typeof m === 'number' &&
-        m >= 0 &&
-        m < cases[d.case].candidates.length
-      ) {
-        out[d.case] = cases[d.case].candidates[m].entity.id;
-      }
-    }
-  } catch {
-    // Stay on default — all "new".
-  }
-  return out;
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return n < lo ? lo : n > hi ? hi : n;
-}
-─────────────────────────────────────
 
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;

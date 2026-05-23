@@ -21,6 +21,19 @@
 //   - fail-open: returns [] on any error
 //   - cap the output so an over-eager LLM can't flood the graph
 //
+// IMPORTANT — TIER GATING (LOCAL vs HOSTED):
+// This module is the LOCAL implementation. It falls through to env keys
+// (ANTHROPIC_API_KEY / OPENAI_API_KEY) unconditionally because the operator
+// IS the user — those keys live on their machine. If/when this is mirrored
+// to the hosted backend (ai-boilerplate-pro), the env fallback MUST be
+// gated by an `allowServerKey` flag set per-org based on plan tier:
+//
+//   const apiKey = byokKey || (allowServerKey ? process.env.ANTHROPIC_API_KEY : undefined);
+//
+// Free-tier hosted orgs without BYOK should get graceful no-op (return []),
+// not consume the server's LLM budget. The hosted entity-resolver.ts
+// already implements this pattern — match it.
+//
 // Why a separate module from entity-extractor: it gets called LATER in the
 // save path (after resolution), it sees the resolved canonical IDs, and
 // the prompt is materially different. Sharing one module would tangle the

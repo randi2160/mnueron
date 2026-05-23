@@ -1181,6 +1181,7 @@ async function cmdEntities(args: string[]) {
     case 'list':  return cmdEntitiesList(rest);
     case 'show':  return cmdEntitiesShow(rest);
     case 'merge': return cmdEntitiesMerge(rest);
+    case 'backfill': return cmdEntitiesBackfill(rest);
     case undefined:
     case '--help':
     case '-h':
@@ -1330,6 +1331,178 @@ async function cmdEntitiesMerge(args: string[]) {
   console.log(`✅ Merged. Winner: ${merged.display_name} (${merged.id})`);
   console.log(`   aliases now:  ${merged.aliases.join(', ')}`);
   console.log(`   mention count: ${merged.mention_count}`);
+}
+
+/**
+ * P2.3 backfill — retro-fit canonical entity IDs onto memories that were
+ * saved before the resolver shipped.
+ *
+ * Two-stage walk per memory:
+ *   1. If `metadata.entities` is missing AND --extract was passed, run the
+ *      extractor (uses ANTHROPIC_API_KEY or OPENAI_API_KEY from env).
+ *   2. If `metadata.entities` is now populated but lacks canonical_id values,
+ *      run the resolver. Updates the entities/memory_entities tables AND
+ *      stamps canonical_id back onto the stored metadata.
+ *
+ * Idempotent — re-running skips memories that are already resolved.
+ *
+ * Flags:
+ *   --ns <name>         restrict to one namespace
+ *   --limit <n>         cap how many memories to process (default 100, max 1000)
+ *   --since <epoch_ms>  only memories created on/after this time
+ *   --extract           also call the extractor for memories with no entities
+ *   --dry-run           preview counts without writing
+ *   --force             re-resolve memories that already have canonical_ids
+ */
+async function cmdEntitiesBackfill(args: string[]) {
+  let ns: string | undefined;
+  let since: number | undefined;
+  let limit = 100;
+  let alsoExtract = false;
+  let dryRun = false;
+  let force = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--ns' && args[i + 1]) ns = args[++i];
+    else if (a === '--since' && args[i + 1]) since = parseInt(args[++i], 10);
+    else if (a === '--limit' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isFinite(v)) limit = Math.max(1, Math.min(10000, v));
+    } else if (a === '--extract') alsoExtract = true;
+    else if (a === '--dry-run') dryRun = true;
+    else if (a === '--force') force = true;
+    else if (a === '--help' || a === '-h') {
+      console.log(
+        'Usage: mnueron entities backfill [--ns <name>] [--limit <n>]\n' +
+          '                                  [--since <epoch_ms>] [--extract]\n' +
+          '                                  [--dry-run] [--force]\n\n' +
+          '  --extract  also runs the extractor for memories with no entities\n' +
+          '             (requires ANTHROPIC_API_KEY or OPENAI_API_KEY env var)\n' +
+          '  --force    re-resolve memories that already have canonical_ids',
+      );
+      return;
+    }
+  }
+
+  const provider = makeProvider(loadConfig());
+  if (
+    typeof provider.backfillResolveMemory !== 'function' ||
+    typeof provider.update !== 'function'
+  ) {
+    console.error('This provider does not support entity backfill.');
+    process.exit(1);
+  }
+  const resolveFn = provider.backfillResolveMemory.bind(provider);
+  const updateFn = provider.update.bind(provider);
+
+  if (alsoExtract && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+    console.error('--extract requires ANTHROPIC_API_KEY or OPENAI_API_KEY in the environment.');
+    process.exit(1);
+  }
+
+  const memories = await provider.list({
+    namespace: ns,
+    created_after: since,
+    limit,
+    offset: 0,
+  });
+  if (memories.length === 0) {
+    console.log('No memories matched. Nothing to do.');
+    return;
+  }
+  console.log(
+    `Found ${memories.length} memor${memories.length === 1 ? 'y' : 'ies'}${ns ? ` in "${ns}"` : ''}.`,
+  );
+
+  let extracted = 0;
+  let resolved = 0;
+  let alreadyResolved = 0;
+  let noEntities = 0;
+  let errors = 0;
+
+  for (const m of memories) {
+    const meta = (m.metadata ?? {}) as Record<string, unknown>;
+    let entities = Array.isArray(meta.entities)
+      ? (meta.entities as Array<{ name: string; type: string; context?: string; canonical_id?: string | null }>)
+      : [];
+
+    // Stage 1 — optional extraction
+    if (entities.length === 0) {
+      if (!alsoExtract) {
+        noEntities += 1;
+        process.stdout.write('.');
+        continue;
+      }
+      if (dryRun) {
+        process.stdout.write('e');
+        extracted += 1;
+        continue;
+      }
+      try {
+        const ents = await extractEntities(m.content, {});
+        if (ents.length === 0) {
+          process.stdout.write('-');
+          continue;
+        }
+        entities = ents;
+        extracted += ents.length;
+        await updateFn(m.id, { metadata: { ...meta, entities } });
+        process.stdout.write('e');
+      } catch (e) {
+        errors += 1;
+        process.stdout.write('x');
+        // Surface the error so we can diagnose — silent failures hid a real
+        // bug in update() previously. Verbose by design: low-volume use case.
+        console.error(
+          `\n  [extract/update failed] memory ${m.id}:`,
+          e instanceof Error ? e.message : e,
+        );
+        continue;
+      }
+    }
+
+    // Stage 2 — resolve (skip if already resolved unless --force)
+    const allResolved = entities.every((e) => typeof e.canonical_id === 'string' && e.canonical_id);
+    if (allResolved && !force) {
+      alreadyResolved += 1;
+      process.stdout.write('=');
+      continue;
+    }
+    if (dryRun) {
+      resolved += entities.length;
+      process.stdout.write('r');
+      continue;
+    }
+    try {
+      const res = await resolveFn(
+        m.id,
+        entities.map((e) => ({ name: e.name, type: e.type, context: e.context })),
+      );
+      const stamped = entities.map((e, i) => ({
+        ...e,
+        canonical_id: res[i]?.canonical_id ?? null,
+      }));
+      await updateFn(m.id, { metadata: { ...meta, entities: stamped } });
+      resolved += entities.length;
+      process.stdout.write('+');
+    } catch (e) {
+      errors += 1;
+      process.stdout.write('x');
+      console.error(
+        `\n  [resolve failed] memory ${m.id}:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
+  process.stdout.write('\n');
+  console.log(
+    `backfill done — resolved=${resolved} extracted=${extracted} already_resolved=${alreadyResolved} no_entities=${noEntities} errors=${errors}` +
+      (dryRun ? '  (dry-run — no writes)' : ''),
+  );
+  if (!dryRun && resolved > 0) {
+    console.log('\nRun "mnueron entities list --sort mentions" to see them.');
+  }
 }
 
 /**

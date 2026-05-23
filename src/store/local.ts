@@ -130,18 +130,35 @@ const FTS_STOP_WORDS = new Set([
 
 /**
  * Translate a natural-language query into an FTS5 MATCH expression.
- * - strips FTS5 control characters
+ * - strips FTS5 control characters AND user-facing punctuation that
+ *   trips FTS5's parser (., /, ', etc.). FTS5's grammar treats `.` and
+ *   apostrophes as separators between identifiers — `"redeploy.sh"` is
+ *   parsed as "redeploy" "." "sh" and chokes. We replace all of these
+ *   with spaces BEFORE tokenizing so the resulting tokens are pure
+ *   alphanumeric-plus-underscore.
  * - lowercases
  * - drops stop words and 1-character tokens
  * - prefix-matches each surviving token (`token*`) so "stores" matches "stored"
  * - ORs the tokens — any one is enough, BM25 ranks multi-hit rows higher
+ *
+ * Regex characters we strip:
+ *   "  (  )  *  :  ^  ~  — FTS5 grammar
+ *   .  ,  ;  /  \  '  `  — punctuation that breaks FTS5 token boundaries
+ *   !  ?  &  |  =  +  -  # @ $  — user-typed but unsafe in MATCH
+ * This is permissive: any non-[a-z0-9_] char is replaced with a space
+ * inside `buildFtsQuery`, so we don't have to enumerate every case.
  */
 function buildFtsQuery(raw: string): string {
-  const cleaned = raw.replace(/["()*:^~]/g, ' ').toLowerCase().trim();
+  // First: collapse anything that isn't a word-char into a space. This is
+  // safer than maintaining a denylist — FTS5 only consumes word tokens
+  // anyway, so we lose nothing by pre-flattening punctuation.
+  const cleaned = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, ' ')
+    .trim();
   if (!cleaned) return '';
   const tokens = cleaned
     .split(/\s+/)
-    .map(t => t.replace(/^[^a-z0-9_]+|[^a-z0-9_]+$/g, ''))
     .filter(t => t.length >= 2 && !FTS_STOP_WORDS.has(t));
   if (tokens.length === 0) return '';
   return tokens.map(t => `${t}*`).join(' OR ');

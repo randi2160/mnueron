@@ -224,7 +224,123 @@ export class RemoteProvider implements Provider {
     return this.req<NamespaceInfo[]>('GET', '/api/namespaces');
   }
 
+  // ─── Procedural memory (hosted) ─────────────────────────────────────
+  //
+  // The hosted backend stores runbooks in a different shape than the
+  // local SQLite provider — title vs name, success/failure vs use_count,
+  // text[] trigger_phrases vs JSONB schema. These methods talk to the
+  // hosted shape; the MCP layer in tools.ts adapts between them and the
+  // ProceduralMemoryView local shape if needed.
+
+  /**
+   * Look up runbooks whose trigger_phrases contain the given phrase
+   * (exact text[] match). Used by memory_recall to auto-surface runbooks
+   * matching the user's recall query.
+   */
+  async proceduralMatch(trigger: string, limit = 5): Promise<HostedProcedural[]> {
+    const params = new URLSearchParams();
+    params.set('trigger', trigger);
+    params.set('limit', String(limit));
+    const res = await this.req<{ procedurals: HostedProcedural[] }>(
+      'GET',
+      `/api/procedural?${params.toString()}`,
+    );
+    return res.procedurals ?? [];
+  }
+
+  /**
+   * List runbooks (most recently used first). For browsing in MCP tools.
+   */
+  async proceduralList(limit = 50): Promise<HostedProcedural[]> {
+    const res = await this.req<{ procedurals: HostedProcedural[] }>(
+      'GET',
+      `/api/procedural?limit=${limit}`,
+    );
+    return res.procedurals ?? [];
+  }
+
+  /**
+   * Fetch a runbook by id (full step content).
+   */
+  async proceduralGet(id: string): Promise<HostedProcedural | null> {
+    try {
+      return await this.req<HostedProcedural>('GET', `/api/procedural/${encodeURIComponent(id)}`);
+    } catch (e) {
+      if ((e as HttpError)?.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * Record a runbook outcome — bumps success_count or failure_count and
+   * stamps last_used_at. Use after the agent (or human) has actually run
+   * the procedure end-to-end.
+   */
+  async proceduralRecordOutcome(
+    id: string,
+    outcome: 'success' | 'failure',
+  ): Promise<HostedProcedural | null> {
+    try {
+      return await this.req<HostedProcedural>(
+        'POST',
+        `/api/procedural/${encodeURIComponent(id)}`,
+        { outcome },
+      );
+    } catch (e) {
+      if ((e as HttpError)?.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * Unified recall — calls /api/recall/unified to get memories AND
+   * matching runbooks in one round trip. Used by the memory_recall MCP
+   * tool to transparently surface runbooks when a query matches a
+   * trigger phrase.
+   */
+  async unifiedRecall(
+    query: string,
+    opts: { namespace?: string; limit?: number } = {},
+  ): Promise<{ memories: Memory[]; procedurals: HostedProcedural[] }> {
+    const params = new URLSearchParams();
+    params.set('q', query);
+    if (opts.namespace) params.set('namespace', opts.namespace);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    const res = await this.req<{
+      memories: Memory[];
+      procedurals: HostedProcedural[];
+    }>('GET', `/api/recall/unified?${params.toString()}`);
+    return {
+      memories: res.memories ?? [],
+      procedurals: res.procedurals ?? [],
+    };
+  }
+
   async close(): Promise<void> { /* no-op for HTTP */ }
+}
+
+/**
+ * Hosted-side runbook shape. Mirrors what /api/procedural returns.
+ * Different from ProceduralMemoryView (local) — see provider.ts.
+ */
+export interface HostedProcedural {
+  id: string;
+  title: string;
+  summary: string | null;
+  trigger_phrases: string[];
+  steps: Array<{
+    description: string;
+    command?: string;
+    check?: string;
+    notes?: string;
+  }>;
+  success_count: number;
+  failure_count: number;
+  created_at: number | null;
+  updated_at: number | null;
+  last_used_at: number | null;
+  /** Present only on /api/recall/unified responses. */
+  match_kind?: 'trigger' | 'title-fuzzy';
 }
 
 function sleep(ms: number): Promise<void> {

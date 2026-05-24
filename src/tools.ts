@@ -123,7 +123,10 @@ export const TOOL_DEFINITIONS = [
     description:
       'Search saved memories by relevance. Returns PREVIEWS (first ~800 chars) plus full length and id for each match. ' +
       'Use memory_get(id) to fetch the complete text of a specific result. ' +
-      'Defaults to top 5 results. Search is hybrid (keyword + semantic), so the query can be a natural-language description.',
+      'Defaults to top 5 results. Search is hybrid (keyword + semantic), so the query can be a natural-language description. ' +
+      'AUTO-SURFACES RUNBOOKS: if the query matches any saved procedural memory trigger phrase ' +
+      '(e.g. "ship to vercel" → "Push mnueron changes to Vercel" runbook), those runbooks come back ' +
+      'in a separate "procedurals" array alongside the memories. Use procedural_get(id) to fetch full step content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -226,6 +229,65 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  // ─── Procedural memory (runbooks) ──────────────────────────────────────
+  // Procedural memory stores how-to runbooks: title + trigger phrases + step
+  // list. Use these tools when the user asks how to do a recurring task and
+  // memory_recall doesn't already surface a runbook automatically.
+  {
+    name: 'procedural_match',
+    description:
+      'Look up saved runbooks whose trigger phrases match a query. ' +
+      'Returns each matching runbook with its full step list. ' +
+      'Use this when the user asks how to do something — "how do I deploy", "ship to vercel", etc. ' +
+      'memory_recall also auto-surfaces runbooks, but call this directly when you specifically want procedural results.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        trigger: { type: 'string', description: 'The phrase to match against trigger_phrases.' },
+        limit: { type: 'number', description: 'Top-k runbooks to return. Default 5.' },
+      },
+      required: ['trigger'],
+    },
+  },
+  {
+    name: 'procedural_list',
+    description:
+      'List saved runbooks, most-recently-used first. Returns titles, trigger phrases, and reliability counters. ' +
+      'Use to browse available procedures without a specific query.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Default 50, max 200.' },
+      },
+    },
+  },
+  {
+    name: 'procedural_get',
+    description:
+      'Fetch a saved runbook by id, including every step with its command and verification check.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The runbook id from procedural_match or procedural_list.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'procedural_record_outcome',
+    description:
+      'Record that a runbook was run, with the outcome. Bumps the success or failure counter and stamps last_used_at. ' +
+      'Use after the user (or you) has actually executed the runbook end-to-end. ' +
+      'Argument: outcome must be exactly "success" or "failure".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The runbook id.' },
+        outcome: { type: 'string', enum: ['success', 'failure'] },
+      },
+      required: ['id', 'outcome'],
+    },
+  },
 ];
 
 export async function handleToolCall(
@@ -252,14 +314,64 @@ export async function handleToolCall(
     }
     case 'memory_recall': {
       const k = Math.min(25, Math.max(1, (args.k as number) ?? 5));
-      const memories = await provider.search({
-        query: String(args.query ?? ''),
-        namespace: args.namespace as string | undefined,
-        k,
-        tags: args.tags as string[] | undefined,
-      });
+      const query = String(args.query ?? '');
+
+      // Hosted mode: use the unified /api/recall/unified endpoint which
+      // returns BOTH memories and matching runbooks in one round trip.
+      // This is what lets an agent saying "ship to vercel" auto-pull the
+      // matching runbook without ever calling procedural_match directly.
+      //
+      // Local mode (or hosted-old-binary): fall back to the legacy
+      // provider.search() — no runbook surfacing, but agents can still
+      // call procedural_match explicitly.
+      const unifiedRecall = (provider as any).unifiedRecall;
+      let memories: Memory[];
+      let procedurals: Array<Record<string, unknown>> = [];
+      if (typeof unifiedRecall === 'function') {
+        const r = await unifiedRecall.call(provider, query, {
+          namespace: args.namespace as string | undefined,
+          limit: k,
+        });
+        memories = r.memories ?? [];
+        procedurals = r.procedurals ?? [];
+      } else {
+        memories = await provider.search({
+          query,
+          namespace: args.namespace as string | undefined,
+          k,
+          tags: args.tags as string[] | undefined,
+        });
+      }
       const processed = await runAfterRecall(memories, registry);
-      return processed.map(toPreview);
+      const memPreviews = processed.map(toPreview);
+
+      // Trim runbook steps to the same kind of context-friendly preview
+      // the memory previews use. Full step content is still one
+      // procedural_get away — the agent can fetch it if it actually
+      // needs to execute the runbook.
+      const runbookPreviews = procedurals.map((rb) => ({
+        id: rb.id,
+        title: rb.title,
+        summary: rb.summary,
+        trigger_phrases: rb.trigger_phrases,
+        step_count: Array.isArray(rb.steps) ? rb.steps.length : 0,
+        match_kind: rb.match_kind,
+        success_count: rb.success_count,
+        failure_count: rb.failure_count,
+        last_used_at: rb.last_used_at,
+      }));
+
+      // Backwards-compat: if no runbooks matched, return a flat array
+      // (the legacy shape every existing caller expects). If runbooks
+      // ARE present, return the richer envelope. Agents that care about
+      // runbooks see the new shape; old agents see the old one.
+      if (runbookPreviews.length === 0) {
+        return memPreviews;
+      }
+      return {
+        memories: memPreviews,
+        procedurals: runbookPreviews,
+      };
     }
     case 'memory_get': {
       const id = String(args.id ?? '');
@@ -416,6 +528,64 @@ export async function handleToolCall(
         scanned_roots: probe.scannedRoots,
       };
     }
+
+    // ── Procedural memory tools ────────────────────────────────────────
+    // All four delegate to RemoteProvider methods (defined in remote.ts).
+    // Local SQLite has procedural support too but a different shape; the
+    // bridging is left for a follow-up. If the user is on a local-only
+    // setup, these tools error gracefully with a clear message.
+    case 'procedural_match': {
+      const trigger = String(args.trigger ?? '');
+      if (!trigger) throw new Error('trigger is required');
+      const limit = Math.min(25, Math.max(1, (args.limit as number) ?? 5));
+      const match = (provider as any).proceduralMatch;
+      if (typeof match !== 'function') {
+        throw new Error(
+          'procedural_match is only supported on hosted mode. ' +
+            'Set MNUERON_API_URL + MNUERON_API_TOKEN to enable.',
+        );
+      }
+      const runbooks = await match.call(provider, trigger, limit);
+      return { trigger, count: runbooks.length, runbooks };
+    }
+    case 'procedural_list': {
+      const limit = Math.min(200, Math.max(1, (args.limit as number) ?? 50));
+      const list = (provider as any).proceduralList;
+      if (typeof list !== 'function') {
+        throw new Error('procedural_list is only supported on hosted mode.');
+      }
+      const runbooks = await list.call(provider, limit);
+      return { count: runbooks.length, runbooks };
+    }
+    case 'procedural_get': {
+      const id = String(args.id ?? '');
+      if (!id) throw new Error('id is required');
+      const get = (provider as any).proceduralGet;
+      if (typeof get !== 'function') {
+        throw new Error('procedural_get is only supported on hosted mode.');
+      }
+      const runbook = await get.call(provider, id);
+      if (!runbook) throw new Error(`runbook not found: ${id}`);
+      return runbook;
+    }
+    case 'procedural_record_outcome': {
+      const id = String(args.id ?? '');
+      const outcome = String(args.outcome ?? '');
+      if (!id) throw new Error('id is required');
+      if (outcome !== 'success' && outcome !== 'failure') {
+        throw new Error('outcome must be "success" or "failure"');
+      }
+      const record = (provider as any).proceduralRecordOutcome;
+      if (typeof record !== 'function') {
+        throw new Error(
+          'procedural_record_outcome is only supported on hosted mode.',
+        );
+      }
+      const updated = await record.call(provider, id, outcome);
+      if (!updated) throw new Error(`runbook not found: ${id}`);
+      return updated;
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

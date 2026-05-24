@@ -1,0 +1,144 @@
+Mnueron
+Copyright 2026 Mnueron
+
+This product is licensed under the Apache License, Version 2.0 (the
+"License"); you may not use this product except in compliance with
+the License. You may obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+----------------------------------------------------------------------
+Mnueron Additional Notices
+----------------------------------------------------------------------
+
+Mnueron is an open-source memory infrastructure platform designed to
+provide persistent memory, context synchronization, semantic retrieval,
+and workflow intelligence for AI systems, agents, IDEs, and applications.
+
+The Mnueron source code is licensed under Apache License 2.0.
+
+The following are NOT granted under this license:
+
+- The Mnueron name
+- The Mnueron logo
+- Mnueron branding assets
+- Marketing materials
+- Website design/assets
+- Hosted Mnueron cloud services
+- Proprietary SaaS infrastructure
+- Commercial hosted synchronization platform
+
+"Mnueron", the Mnueron logo, and related branding are trademarks
+or registered trademarks of Mnueron.
+
+You may not use the Mnueron name, logo, or branding in a manner
+that implies endorsement, affiliation, or official association
+without prior written permission.
+
+----------------------------------------------------------------------
+Open Source Components
+----------------------------------------------------------------------
+
+This repository may contain optional integrations, connectors, SDKs,
+plugins, browser extensions, MCP servers, local dashboards,
+or synchronization modules.
+
+Contributors retain copyright to their respective contributions.
+
+By submitting a contribution to this repository, you agree that:
+
+1. Your contribution is licensed under Apache License 2.0.
+2. You have the legal right to submit the contribution.
+3. You grant Mnueron and its users the rights described
+   under Apache 2.0.
+
+----------------------------------------------------------------------
+Privacy & Data Usage Notice
+----------------------------------------------------------------------
+
+Mnueron supports both local-only and hosted cloud modes.
+
+Local Mode:
+- Can operate entirely on the user's machine
+- May store memories locally using local databases
+- Does not require cloud synchronization
+
+Hosted Mode:
+- May synchronize memories across devices
+- May process encrypted or user-authorized data
+- May use third-party infrastructure providers
+
+Mnueron does NOT claim ownership of user memories,
+documents, prompts, or synchronized content.
+
+Users are responsible for ensuring they have the rights
+to process, store, or synchronize any content used
+with Mnueron.
+
+----------------------------------------------------------------------
+Third-Party Providers
+----------------------------------------------------------------------
+
+Mnueron may integrate with third-party AI providers,
+storage systems, databases, authentication providers,
+or APIs including but not limited to:
+
+- OpenAI
+- Anthropic
+- Google
+- Microsoft
+- AWS
+- Supabase
+- PostgreSQL
+- Vector database providers
+- IDE integrations
+- Browser integrations
+
+Use of those services is subject to their respective
+terms and privacy policies.
+
+----------------------------------------------------------------------
+Disclaimer
+----------------------------------------------------------------------
+
+Mnueron is provided "AS IS", without warranty of any kind.
+
+The authors and contributors shall not be liable for:
+
+- Data loss
+- AI-generated inaccuracies
+- Context corruption
+- Security incidents
+- Misuse of synchronized memories
+- Workflow interruptions
+- Financial or business damages
+- Third-party service failures
+
+Users are responsible for validating outputs generated
+through AI systems connected to Mnueron.
+
+----------------------------------------------------------------------
+Website & Hosted Platform
+----------------------------------------------------------------------
+
+The Apache 2.0 license applies only to the open-source
+components explicitly distributed under this repository.
+
+The hosted Mnueron platform, cloud synchronization service,
+website infrastructure, billing systems, analytics systems,
+and proprietary backend services may operate under separate
+commercial terms and are not automatically covered by this
+open-source license.
+
+----------------------------------------------------------------------
+Official Project
+----------------------------------------------------------------------
+
+Official Website:
+https://www.mnueron.com
+
+Official Repository:
+https://github.com/randi2160/mnueron
+
+Tagline:
+"Memory for every AI."

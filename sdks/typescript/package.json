@@ -32,7 +32,7 @@
     "mnueron"
   ],
   "author": "mnueron <khemlall.mangal@gmail.com>",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "homepage": "https://www.mnueron.com",
   "repository": {
     "type": "git",

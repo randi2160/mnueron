@@ -166,5 +166,5 @@
     "directory": "sdks/vscode"
   },
   "homepage": "https://www.mnueron.com",
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

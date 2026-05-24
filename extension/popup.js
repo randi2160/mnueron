@@ -356,12 +356,34 @@ async function doRecall() {
   resultsEl.innerHTML = '<div style="color:#6c7488; font-size:12px; padding:6px 0;">Searching…</div>';
 
   try {
-    const res = await chrome.runtime.sendMessage({ type: 'mnueron:recall', q, k: 5 });
+    // Unified recall: returns { memories, procedurals }. We render runbooks
+    // first (action-oriented; more useful when the user is asking how to do
+    // something) then memories. Falls back to the legacy shape if the
+    // backend's older — see recallUnified() in background.js.
+    const res = await chrome.runtime.sendMessage({ type: 'mnueron:recall_unified', q, k: 5 });
     if (!res?.ok) {
       resultsEl.innerHTML = `<div style="color:#ffa6b0; font-size:12px;">${res?.error || 'recall failed'}</div>`;
       return;
     }
-    const items = Array.isArray(res.result) ? res.result : [];
+
+    // Defensive shape-handling: support BOTH the new unified shape
+    // ({memories, procedurals}) AND any older self-hosted backend that
+    // might still return a flat array. Either way we end up with `items`
+    // as a single ordered list the existing card renderer can process.
+    let items = [];
+    if (Array.isArray(res.result)) {
+      // Legacy flat-array fallback.
+      items = res.result;
+    } else if (res.result && typeof res.result === 'object') {
+      const procedurals = Array.isArray(res.result.procedurals) ? res.result.procedurals : [];
+      const memories    = Array.isArray(res.result.memories)    ? res.result.memories    : [];
+      // Synthesize each runbook as a memory-shaped card so the existing
+      // renderer + Insert + Open paths work unchanged. The `_isRunbook`
+      // flag lets openMemoryInDashboard route to /dashboard/procedural.
+      const runbookCards = procedurals.map(p => synthRunbookCard(p));
+      items = [...runbookCards, ...memories];
+    }
+
     recallById.clear();
     // Fresh search clears prior selection — IDs from the new result set
     // are the only valid selections going forward.
@@ -525,9 +547,64 @@ async function openMemoryInDashboard(m) {
   const base = s.prefer_hosted
     ? (s.hosted_url || 'https://mnueron.com').replace(/\/$/, '')
     : (s.local_url || 'http://localhost:3122').replace(/\/$/, '');
+
+  // Runbooks live in /dashboard/procedural, not /dashboard. Detect via the
+  // _isRunbook flag synthRunbookCard stamps.
+  if (m._isRunbook) {
+    chrome.tabs.create({ url: `${base}/dashboard/procedural` });
+    return;
+  }
+
   // Mark a hash so the dashboard could deep-link to the memory in the
   // future. Today the dashboard just lands you on the list.
   chrome.tabs.create({ url: `${base}/dashboard#memory=${encodeURIComponent(m.id)}` });
+}
+
+/**
+ * Build a memory-shaped object from a procedural memory so the existing
+ * renderResult() / Insert / Open paths work unchanged.
+ *
+ * Visual cues that mark it as a runbook:
+ *   - title prefixed with ▶
+ *   - namespace shown as "runbook"
+ *   - content is the joined step list, so Insert pastes a runnable recipe
+ *   - _isRunbook flag routes Open to /dashboard/procedural
+ *
+ * Procedural IDs are UUIDs so they can't collide with memory IDs in the
+ * recallById map.
+ */
+function synthRunbookCard(p) {
+  const summary = (p.summary || '').trim();
+  const stepText = (p.steps || [])
+    .map((s, i) => {
+      const desc = (s.description || '').trim();
+      const cmd  = s.command ? `\n   $ ${String(s.command).trim()}` : '';
+      const chk  = s.check   ? `\n   → check: ${String(s.check).trim()}` : '';
+      return `${i + 1}. ${desc}${cmd}${chk}`;
+    })
+    .join('\n');
+
+  const triggerLine = (p.trigger_phrases || []).length > 0
+    ? `Triggers: ${(p.trigger_phrases || []).join(', ')}\n\n`
+    : '';
+
+  const content = [summary, triggerLine + stepText].filter(Boolean).join('\n\n').trim();
+
+  return {
+    id: p.id,
+    namespace: 'runbook',
+    content,
+    metadata: {
+      title: `▶ ${p.title || 'Untitled runbook'}`,
+      runbook: true,
+      runbook_id: p.id,
+      trigger_phrases: p.trigger_phrases || [],
+      success_count: p.success_count ?? 0,
+      failure_count: p.failure_count ?? 0,
+    },
+    created_at: p.last_used_at || p.updated_at || p.created_at || Date.now(),
+    _isRunbook: true,
+  };
 }
 
 $('recall-go').addEventListener('click', doRecall);

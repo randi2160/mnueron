@@ -113,6 +113,53 @@ async function recallMemories({ q, namespace, k = 5 }) {
 }
 
 /**
+ * Unified recall — calls /api/recall/unified which returns BOTH memories
+ * AND matching runbooks (procedural memories) in one round trip. Falls
+ * back to the legacy /api/memories search if the backend doesn't have
+ * the unified endpoint (older self-hosted setups), so the popup and
+ * ambient never end up empty just because the server is older.
+ *
+ * Response shape (new endpoint):
+ *   { memories: Memory[], procedurals: Procedural[], query }
+ *
+ * Response shape (fallback to legacy):
+ *   { memories: Memory[], procedurals: [] }   ← we synthesise the
+ *                                              procedurals field as []
+ *                                              so callers can rely on it
+ */
+async function recallUnified({ q, namespace, k = 5 }) {
+  if (!q || !q.trim()) return { memories: [], procedurals: [] };
+  const params = new URLSearchParams();
+  params.set('q', q.trim());
+  if (!namespace) {
+    const s = await getSettings();
+    if (s.ambient_namespace) namespace = s.ambient_namespace;
+  }
+  if (namespace) params.set('namespace', namespace);
+  params.set('limit', String(k));
+
+  try {
+    const res = await apiFetch(`/api/recall/unified?${params.toString()}`);
+    return {
+      memories: Array.isArray(res?.memories) ? res.memories : [],
+      procedurals: Array.isArray(res?.procedurals) ? res.procedurals : [],
+    };
+  } catch (e) {
+    // Old backend (404 on /api/recall/unified)? Fall back to legacy
+    // search so the user still gets memory results, just no runbooks.
+    // Any other error is genuinely a failure — re-throw so the popup
+    // surfaces it.
+    const msg = e?.message || '';
+    if (/404|not found/i.test(msg)) {
+      console.warn('[mnueron] /api/recall/unified 404 — falling back to legacy recall');
+      const memories = await recallMemories({ q, namespace, k });
+      return { memories: Array.isArray(memories) ? memories : [], procedurals: [] };
+    }
+    throw e;
+  }
+}
+
+/**
  * List the user's distinct namespaces. Used by the options page to
  * populate the "Search scope" dropdown so they can pick from real
  * existing namespaces instead of guessing names.
@@ -506,6 +553,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
       } else if (msg.type === 'mnueron:recall') {
         const result = await recallMemories({
+          q: msg.q,
+          namespace: msg.namespace,
+          k: msg.k ?? 5,
+        });
+        sendResponse({ ok: true, result });
+      } else if (msg.type === 'mnueron:recall_unified') {
+        // New unified path — returns { memories, procedurals }. Callers
+        // that opted in see runbooks alongside memories. Existing callers
+        // using mnueron:recall keep getting the flat array they expect.
+        const result = await recallUnified({
           q: msg.q,
           namespace: msg.namespace,
           k: msg.k ?? 5,

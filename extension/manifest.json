@@ -47,7 +47,8 @@
       ],
       "js": [
         "scrapers/claude.js",
-        "scrapers/ambient.js"
+        "scrapers/ambient.js",
+        "scrapers/floating.js"
       ],
       "run_at": "document_idle"
     },
@@ -58,7 +59,8 @@
       ],
       "js": [
         "scrapers/chatgpt.js",
-        "scrapers/ambient.js"
+        "scrapers/ambient.js",
+        "scrapers/floating.js"
       ],
       "run_at": "document_idle"
     },
@@ -68,7 +70,8 @@
       ],
       "js": [
         "scrapers/gemini.js",
-        "scrapers/ambient.js"
+        "scrapers/ambient.js",
+        "scrapers/floating.js"
       ],
       "run_at": "document_idle"
     }

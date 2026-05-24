@@ -427,14 +427,25 @@
     if (!q || q === lastQuery) return;
     lastQuery = q;
     try {
-      // background.js's recallMemories() automatically falls back to
-      // settings.ambient_namespace when no explicit namespace is supplied,
-      // so we don't need to pass it from here. Keeps the message payload
-      // small and lets the user change the scope without us having to
-      // re-read settings on every keystroke.
-      const res = await sendMessage({ type: 'mnueron:recall', q, k: 5 });
+      // Use the unified endpoint so matching runbooks surface alongside
+      // memories. background.js's recallUnified() auto-falls back to
+      // legacy if the backend's older — see background.js for details.
+      const res = await sendMessage({ type: 'mnueron:recall_unified', q, k: 5 });
       if (!res?.ok) { hidePill(); return; }
-      lastResults = Array.isArray(res.result) ? res.result : [];
+
+      // Support both shapes: new ({memories, procedurals}) and legacy
+      // flat array. Procedurals are surfaced as runbook cards above the
+      // memory cards in the panel.
+      let combined = [];
+      if (Array.isArray(res.result)) {
+        combined = res.result;
+      } else if (res.result && typeof res.result === 'object') {
+        const procedurals = Array.isArray(res.result.procedurals) ? res.result.procedurals : [];
+        const memories    = Array.isArray(res.result.memories)    ? res.result.memories    : [];
+        combined = [...procedurals.map(synthRunbook), ...memories];
+      }
+
+      lastResults = combined;
       if (lastResults.length === 0) {
         hidePill();
       } else {
@@ -443,6 +454,29 @@
     } catch {
       hidePill();
     }
+  }
+
+  /**
+   * Build a memory-shaped object from a procedural memory so the existing
+   * renderList() card pipeline can display it. Same convention as
+   * popup.js's synthRunbookCard.
+   */
+  function synthRunbook(p) {
+    const stepText = (p.steps || [])
+      .map((s, i) => {
+        const desc = (s.description || '').trim();
+        const cmd  = s.command ? `\n   $ ${String(s.command).trim()}` : '';
+        return `${i + 1}. ${desc}${cmd}`;
+      })
+      .join('\n');
+    const content = [(p.summary || '').trim(), stepText].filter(Boolean).join('\n\n').trim();
+    return {
+      id: p.id,
+      namespace: 'runbook',
+      content,
+      metadata: { title: `▶ ${p.title || 'Untitled runbook'}`, runbook: true, runbook_id: p.id },
+      _isRunbook: true,
+    };
   }
 
   function lastSentence(text) {

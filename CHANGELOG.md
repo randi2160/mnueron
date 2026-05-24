@@ -7,8 +7,42 @@ messages and PR descriptions.
 
 ## [Unreleased]
 
-These are in the repo on `main` but not yet published to npm. The next
-`npm publish` will bundle them as a minor or patch bump.
+In the repo on `main` but not yet published.
+
+## [0.5.0] — 2026-05-23
+
+Major release. Procedural memory + entity resolution + knowledge graph +
+self-revising memory + four new MCP tools that wire runbooks into every
+AI tool that talks to mnueron.
+
+### Added (MCP — procedural tools for AI agents)
+- **Four new MCP tools** — `procedural_match` (trigger-phrase lookup),
+  `procedural_list`, `procedural_get`, `procedural_record_outcome`. AI
+  agents (Claude Desktop, Cursor, Windsurf, Cline) can now query saved
+  runbooks directly. Hosted mode only for now; local SQLite procedural
+  bridging is a follow-up.
+- **`memory_recall` auto-surfaces runbooks.** When an agent calls
+  `memory_recall("ship to vercel")`, any saved runbook whose
+  `trigger_phrases` match is returned alongside memory previews in a new
+  `procedurals` field. Invisible to old clients (response stays flat
+  array when no runbooks match); new clients get the richer envelope.
+- **`/api/recall/unified`** — new hosted endpoint the MCP layer calls.
+  Runs BM25 against memories AND trigger-phrase + ILIKE against
+  procedural_memories in parallel, returns both in one round trip.
+  Auto-logs recall events so the analytics dashboard's `recall_count`
+  stays accurate.
+
+### Added (Multi-provider LLM fallback)
+- **OpenAI fallback everywhere** — summarizer, entity-extractor,
+  relation-extractor, entity-resolver, and consolidator-merge all now
+  follow the same four-step chain: BYOK Anthropic → BYOK OpenAI →
+  server Anthropic → server OpenAI. Set `OPENAI_API_KEY` and every LLM
+  feature in mnueron runs on GPT-4o-mini without needing an Anthropic
+  account.
+- **Structured merge failures** — `mergeMemoriesWithLLM` now returns
+  `{ ok: false, reason, message }` with the real upstream error
+  (4xx/5xx, model name, rate limit) instead of `null`. The
+  consolidate UI surfaces the real reason.
 
 ### Added (Procedural memory — Mem0 leapfrog)
 - **Procedural memory** — a third memory type alongside semantic + episodic.

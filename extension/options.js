@@ -126,16 +126,77 @@ async function save() {
   for (const f of FIELDS) patch[f] = $(f).value.trim();
   for (const f of CHECKS) patch[f] = $(f).checked;
   for (const f of SELECTS) patch[f] = $(f).value;
+
+  // UX win: if the user pasted a hosted_token (starts with "mnu_") but
+  // left prefer_hosted off, they almost certainly meant to use hosted
+  // mode. The General page exposes the token but the prefer_hosted
+  // toggle is buried in the Connection sidebar item — most users would
+  // never find it. Auto-flipping on first-token-paste eliminates the
+  // "Failed to fetch" mystery (ping hitting dead localhost:3122).
+  //
+  // Conditions for the auto-flip:
+  //   - hosted_token looks like a real bearer token
+  //   - prefer_hosted is currently off
+  //   - hosted_url is non-empty (default fallback to mnueron.com is fine)
+  // We only flip ON; we never silently flip OFF.
+  const looksLikeToken =
+    typeof patch.hosted_token === 'string' &&
+    /^mnu_[A-Za-z0-9]{16,}/.test(patch.hosted_token);
+  if (looksLikeToken && patch.prefer_hosted === false) {
+    patch.prefer_hosted = true;
+    const cb = $('prefer_hosted');
+    if (cb) cb.checked = true;
+    // Make sure there's SOMETHING in hosted_url; default to mnueron.com.
+    if (!patch.hosted_url) {
+      patch.hosted_url = 'https://mnueron.com';
+      const urlEl = $('hosted_url');
+      if (urlEl) urlEl.value = patch.hosted_url;
+    }
+  }
+
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:set_settings', patch });
-  if (res?.ok) toast('Saved.', 'ok');
-  else toast('Save failed.', 'err');
+  if (res?.ok) {
+    toast(
+      patch.prefer_hosted ? 'Saved. Hosted mode enabled ✓' : 'Saved.',
+      'ok',
+    );
+    // Re-run the connection pill so the user sees green immediately
+    // after the save flips prefer_hosted, rather than having to click
+    // Test connection.
+    void refreshConnectionPill();
+  } else {
+    toast('Save failed.', 'err');
+  }
 }
 
 async function testConnection() {
   toast('Pinging…');
+
+  // Look up the URL we're about to ping so the error toast can say
+  // "couldn't reach https://mnueron.com" instead of just "Failed to
+  // fetch" — that one string saved hours of guessing for at least one
+  // user (May 2026 lockout postmortem).
+  const settingsRes = await chrome.runtime.sendMessage({ type: 'mnueron:get_settings' });
+  const s = settingsRes?.settings || {};
+  const target = s.prefer_hosted
+    ? (s.hosted_url || 'https://mnueron.com')
+    : (s.local_url  || 'http://localhost:3122');
+
   const res = await chrome.runtime.sendMessage({ type: 'mnueron:ping' });
-  if (res?.status?.ok) toast('Backend reachable ✓', 'ok');
-  else toast(`Cannot reach backend: ${res?.status?.error || 'unknown error'}`, 'err');
+  if (res?.status?.ok) {
+    toast(`Backend reachable ✓  (${target})`, 'ok');
+  } else {
+    const why = res?.status?.error || 'unknown error';
+    // "Failed to fetch" specifically — give actionable hint instead of
+    // the cryptic browser message.
+    const hint =
+      /failed to fetch/i.test(why)
+        ? (s.prefer_hosted
+            ? `Cannot reach ${target}. Check the URL or your network.`
+            : `Cannot reach ${target}. Your local mnueron server isn't running — start it with "npx mnueron start" or flip Connection → Prefer hosted ON.`)
+        : `${why}  (${target})`;
+    toast(hint, 'err');
+  }
 }
 
 function toast(msg, kind = '') {

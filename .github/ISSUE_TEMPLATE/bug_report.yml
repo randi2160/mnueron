@@ -1,0 +1,85 @@
+name: Bug report
+description: Something isn't working as expected.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug — concrete reports are how mnueron gets better.
+        Please fill in as much as you can; the more reproducible, the faster the fix.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I ran `mnueron save` with a 5 MB file, the CLI hung for 30s and then crashed with..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps so a maintainer can hit the same path on their machine.
+      placeholder: |
+        1. `mnueron init`
+        2. `mnueron save --namespace test < big-file.md`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      placeholder: |
+        Expected: save returns a memory id within ~1s.
+        Actual: hangs 30s, exits with `FATAL: rate limit`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode were you using?
+      options:
+        - Local (SQLite, no API token)
+        - Hosted (mnueron.com, API token)
+        - Both / mixed
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: mnueron version
+      description: Output of `mnueron --version`.
+      placeholder: "0.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS / Node version
+      placeholder: "Windows 11 / Node 20.11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error output. Redact API tokens (`mnu_...`) and secrets.
+      render: shell
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and discussions before filing.
+          required: true

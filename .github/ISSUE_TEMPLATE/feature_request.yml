@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: have a look at [ROADMAP.md](https://github.com/randi2160/mnueron/blob/main/ROADMAP.md)
+        — if the feature is already planned, comment there instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the pain, not the solution. We may have a better fix than what you'd suggest.
+      placeholder: "When I switch between Cursor and Claude Desktop, my repo context resets every time..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: One specific change you'd like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, other tools you compared to, or other approaches you ruled out.
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode does this affect?
+      multiple: true
+      options:
+        - Local (SQLite CLI)
+        - Hosted (mnueron.com)
+        - Chrome extension
+        - VS Code extension
+        - SDKs (TypeScript / Python / .NET)
+        - MCP server
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Would you contribute?
+      options:
+        - label: I'd be willing to open a PR for this if pointed in the right direction.
+        - label: I'd be happy to test a beta of this feature.

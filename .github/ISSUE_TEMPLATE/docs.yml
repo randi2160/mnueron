@@ -1,0 +1,40 @@
+name: Documentation issue
+description: A doc page is wrong, missing, or unclear.
+title: "[Docs] "
+labels: ["documentation", "good-first-issue"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation fixes are some of the most useful PRs we get.
+        These are flagged `good-first-issue` so new contributors can pick them up.
+
+  - type: input
+    id: page
+    attributes:
+      label: Which page or file?
+      description: URL of the doc, or path to the file in the repo.
+      placeholder: "https://mnueron.com/docs/getting-started/pulling-memory"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong with it?
+      description: Wrong information / missing step / unclear wording / broken link / outdated screenshot — whatever applies.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested
+    attributes:
+      label: Suggested change
+      description: What the doc should say instead. A paragraph or a diff — either is fine.
+
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Are you opening a PR?
+      options:
+        - label: I'm planning to send a PR for this. (Not required — we'll fix it either way.)

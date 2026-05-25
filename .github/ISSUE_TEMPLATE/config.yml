@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or general discussion
+    url: https://github.com/randi2160/mnueron/discussions
+    about: Have a question, idea, or want to share what you built? Open a Discussion instead — Issues are for bugs and concrete feature requests.
+  - name: Security vulnerability
+    url: https://github.com/randi2160/mnueron/security/advisories/new
+    about: Report a security issue privately via GitHub's coordinated disclosure flow. Do NOT file a public issue for security bugs.

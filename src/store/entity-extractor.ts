@@ -42,18 +42,76 @@ export interface ExtractOptions {
 export const ENTITY_EXTRACTION_ENABLED =
   (process.env.MNUERON_ENABLE_ENTITY_EXTRACTION ?? '').toLowerCase() === 'true';
 
+// Process-wide circuit breaker. When either provider returns 429, we suspend
+// extraction for a cooldown window so a single rate-limit hit doesn't turn
+// into thousands of follow-on warnings (and doesn't keep consuming whatever
+// quota remains in shorter time buckets). Saves continue with no entity tags.
+//
+// Cooldowns by detected scope:
+//   - "per day"    -> 1 hour (daily quotas reset at the provider's midnight;
+//                    an hour balances "stop spamming" vs. "retry if user upgrades")
+//   - "per minute" -> 60 seconds
+//   - "per second" -> 5 seconds
+//   - unknown      -> 5 minutes
+//
+// One warn-line per disable event keeps the console clean.
+let extractionDisabledUntil = 0;
+let warnedThisCooldown = false;
+
+function isExtractionRateLimited(): boolean {
+  if (Date.now() < extractionDisabledUntil) return true;
+  if (extractionDisabledUntil !== 0 && Date.now() >= extractionDisabledUntil) {
+    // Cooldown elapsed -- clear so the next 429 can warn again.
+    extractionDisabledUntil = 0;
+    warnedThisCooldown = false;
+  }
+  return false;
+}
+
+function disableExtractionAfter429(provider: 'openai' | 'anthropic', body: string): void {
+  const lower = body.toLowerCase();
+  let durationMs = 5 * 60 * 1000; // default: 5 minutes
+  let scope = 'unknown';
+  if (lower.includes('per day')) {
+    durationMs = 60 * 60 * 1000;
+    scope = 'per-day';
+  } else if (lower.includes('per minute')) {
+    durationMs = 60 * 1000;
+    scope = 'per-minute';
+  } else if (lower.includes('per second')) {
+    durationMs = 5 * 1000;
+    scope = 'per-second';
+  }
+  extractionDisabledUntil = Math.max(extractionDisabledUntil, Date.now() + durationMs);
+  if (!warnedThisCooldown) {
+    warnedThisCooldown = true;
+    const mins = Math.round(durationMs / 60000);
+    console.warn(
+      `[mnueron/entity-extractor] ${provider} returned 429 (${scope}). ` +
+      `Suspending entity extraction for ~${mins}m. ` +
+      `Saves will continue with no entity tags. ` +
+      `Set MNUERON_ENABLE_ENTITY_EXTRACTION=false to opt out permanently.`,
+    );
+  }
+}
+
 /**
  * Per-call gate. Same shape as hosted-side `shouldExtractEntities`.
  *
  * Explicit per-call opt-in (metadata.extract_entities: true OR BYOK key)
  * always runs, even on short content. The length floor only applies to
  * the env-var default path, to keep that from burning money on noise.
+ *
+ * Circuit breaker: a recent 429 from either provider disables this gate
+ * across the whole process for the cooldown window. Saves still complete
+ * normally -- they just skip the LLM call that would have failed anyway.
  */
 export function shouldExtractEntities(
   contentLen: number,
   metadata: Record<string, unknown> | undefined,
   minChars = MIN_LENGTH_CHARS,
 ): boolean {
+  if (isExtractionRateLimited()) return false;
   if (metadata?.extract_entities === true) return true;
   const a = metadata?.byok_anthropic_key;
   if (typeof a === 'string' && a.length > 0) return true;
@@ -174,9 +232,13 @@ async function extractViaAnthropic(
     });
     if (!resp.ok) {
       const body = await resp.text();
-      console.warn(
-        '[mnueron/entity-extractor/anthropic] HTTP ' + resp.status + ': ' + body.slice(0, 200),
-      );
+      if (resp.status === 429) {
+        disableExtractionAfter429('anthropic', body);
+      } else {
+        console.warn(
+          '[mnueron/entity-extractor/anthropic] HTTP ' + resp.status + ': ' + body.slice(0, 200),
+        );
+      }
       return [];
     }
     const data = (await resp.json()) as {
@@ -219,9 +281,13 @@ async function extractViaOpenAI(content: string, apiKey: string): Promise<Extrac
     });
     if (!resp.ok) {
       const body = await resp.text();
-      console.warn(
-        '[mnueron/entity-extractor/openai] HTTP ' + resp.status + ': ' + body.slice(0, 200),
-      );
+      if (resp.status === 429) {
+        disableExtractionAfter429('openai', body);
+      } else {
+        console.warn(
+          '[mnueron/entity-extractor/openai] HTTP ' + resp.status + ': ' + body.slice(0, 200),
+        );
+      }
       return [];
     }
     const data = (await resp.json()) as {

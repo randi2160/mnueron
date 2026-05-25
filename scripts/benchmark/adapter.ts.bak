@@ -1,0 +1,115 @@
+/**
+ * mnueron adapter for memory benchmarks (LoCoMo, LongMemEval, etc.)
+ *
+ * Wraps mnueron's LocalProvider in the two-method interface that the Mem0
+ * / AMB benchmark harnesses expect:
+ *
+ *   add(messages, userId)            → bulk ingest a conversation
+ *   search(query, userId, k=10)      → return top-k memories with scores
+ *
+ * Each user gets a dedicated namespace ("locomo:{userId}") so cross-user
+ * recall can't inflate scores. Synthetic dialogue timestamps (critical for
+ * LoCoMo's temporal category) are stored in metadata so the answer-gen
+ * LLM can use them; mnueron's own created_at stays wall-clock.
+ */
+
+import { LocalProvider } from '../../src/store/local.js';
+import { loadConfig } from '../../src/config.js';
+
+export interface BenchMessage {
+  speaker: string;
+  text: string;
+  /** Synthetic LoCoMo timestamp, e.g. "1:00 pm on 8 May, 2023". Pass through verbatim. */
+  timestamp?: string;
+  /** session_idx (1-based) — for grouping in retrieval. */
+  session_idx?: number;
+  /** LoCoMo dia_id, e.g. "D5:13" — for evidence-citation eval. */
+  dia_id?: string;
+}
+
+export interface BenchHit {
+  id: string;
+  content: string;
+  score: number;
+  timestamp?: string;
+  speaker?: string;
+  session_idx?: number;
+  dia_id?: string;
+}
+
+export interface AdapterOptions {
+  /** Override the SQLite DB path. Defaults to a per-run tmp file. */
+  dbPath?: string;
+  /** Namespace prefix; final namespace is `${prefix}:${userId}`. */
+  namespacePrefix?: string;
+}
+
+export class MnueronAdapter {
+  private provider: LocalProvider;
+  private prefix: string;
+
+  constructor(opts: AdapterOptions = {}) {
+    const cfg = loadConfig();
+    if (opts.dbPath) {
+      // Force a clean DB for the benchmark run; do NOT pollute the user's
+      // real ~/.mnueron/memories.db
+      (cfg as any).local_db_path = opts.dbPath;
+    }
+    this.provider = new LocalProvider(cfg as any);
+    this.prefix = opts.namespacePrefix ?? 'bench';
+  }
+
+  private ns(userId: string): string {
+    return `${this.prefix}:${userId}`;
+  }
+
+  /**
+   * Ingest a conversation turn-by-turn into mnueron. Order matters for
+   * LoCoMo temporal questions — call this sequentially per session.
+   */
+  async add(messages: BenchMessage[], userId: string): Promise<number> {
+    let saved = 0;
+    for (const m of messages) {
+      const content = `${m.speaker}: ${m.text}`;
+      await this.provider.save({
+        content,
+        namespace: this.ns(userId),
+        source: 'benchmark',
+        source_ref: m.dia_id,
+        metadata: {
+          speaker: m.speaker,
+          timestamp: m.timestamp ?? null,
+          session_idx: m.session_idx ?? null,
+          dia_id: m.dia_id ?? null,
+        },
+      });
+      saved++;
+    }
+    return saved;
+  }
+
+  /**
+   * Retrieve top-k memories for a query. Returns full content (not preview)
+   * + score + metadata so the answer-gen LLM can reason over timestamps.
+   */
+  async search(query: string, userId: string, k = 10): Promise<BenchHit[]> {
+    const hits = await this.provider.search({
+      query,
+      namespace: this.ns(userId),
+      k,
+    });
+    return hits.map((h: any) => ({
+      id: h.id,
+      content: h.content,
+      score: typeof h.score === 'number' ? h.score : 0,
+      timestamp: h.metadata?.timestamp ?? undefined,
+      speaker: h.metadata?.speaker ?? undefined,
+      session_idx: h.metadata?.session_idx ?? undefined,
+      dia_id: h.metadata?.dia_id ?? undefined,
+    }));
+  }
+
+  async close(): Promise<void> {
+    await this.provider.close();
+  }
+}

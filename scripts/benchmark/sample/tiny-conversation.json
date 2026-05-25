@@ -1,0 +1,60 @@
+[
+  {
+    "sample_id": "smoke-1",
+    "conversation": {
+      "speaker_a": "Alex",
+      "speaker_b": "Maya",
+      "session_1_date_time": "10:00 am on 3 March, 2024",
+      "session_1": [
+        {"speaker": "Alex", "dia_id": "D1:1", "text": "Maya, I'm moving to Portland in April for a new job at a coffee roastery."},
+        {"speaker": "Maya", "dia_id": "D1:2", "text": "Congrats! Portland sounds great. What roastery?"},
+        {"speaker": "Alex", "dia_id": "D1:3", "text": "Stumptown. I start April 15th. They're giving me a $5k signing bonus."},
+        {"speaker": "Maya", "dia_id": "D1:4", "text": "Nice. My sister Tasha lives there, she can show you around."}
+      ],
+      "session_2_date_time": "8:30 pm on 22 April, 2024",
+      "session_2": [
+        {"speaker": "Alex", "dia_id": "D2:1", "text": "First week at Stumptown is done. Met Tasha — she's awesome."},
+        {"speaker": "Maya", "dia_id": "D2:2", "text": "Told you! Have you found a place yet?"},
+        {"speaker": "Alex", "dia_id": "D2:3", "text": "Yeah, a loft in Pearl District. $2,100/month. Steep but I love it."}
+      ]
+    },
+    "qa": [
+      {
+        "question": "What city did Alex move to?",
+        "answer": "Portland",
+        "category": 1,
+        "evidence": ["D1:1"]
+      },
+      {
+        "question": "Where does Alex work?",
+        "answer": "Stumptown coffee roastery",
+        "category": 1,
+        "evidence": ["D1:1", "D1:3"]
+      },
+      {
+        "question": "What is Alex's monthly rent in the Pearl District?",
+        "answer": "$2,100",
+        "category": 1,
+        "evidence": ["D2:3"]
+      },
+      {
+        "question": "How much was Alex's signing bonus, and what neighborhood did they end up in?",
+        "answer": "$5,000 bonus; Pearl District",
+        "category": 2,
+        "evidence": ["D1:3", "D2:3"]
+      },
+      {
+        "question": "How many days passed between Alex starting work and finding a loft?",
+        "answer": "About one week — started April 15, talked about the loft around April 22.",
+        "category": 3,
+        "evidence": ["D1:3", "D2:1", "D2:3"]
+      },
+      {
+        "question": "What is the name of Alex's pet dog?",
+        "answer": "NO_ANSWER",
+        "category": 5,
+        "adversarial": true
+      }
+    ]
+  }
+]

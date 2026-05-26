@@ -87,6 +87,237 @@ export function ensureProceduralSchema(db: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_procedural_name
       ON procedural_memories(namespace, lower(name));
   `);
+
+  // ── Terminal Copilot columns (additive migration) ──────────────────────
+  // Older runbooks keep working — these columns are nullable / default-0.
+  // SQLite does NOT support `ADD COLUMN IF NOT EXISTS`, so we check
+  // PRAGMA table_info first and only run the ALTER for missing columns.
+  const existing = new Set(
+    (db.prepare(`PRAGMA table_info(procedural_memories)`).all() as Array<{ name: string }>)
+      .map((c) => c.name),
+  );
+  const migrations: Array<[string, string]> = [
+    ['trigger_phrases',    `ALTER TABLE procedural_memories ADD COLUMN trigger_phrases TEXT`],          // JSON string[]
+    ['error_fingerprints', `ALTER TABLE procedural_memories ADD COLUMN error_fingerprints TEXT`],       // JSON string[]
+    ['verified',           `ALTER TABLE procedural_memories ADD COLUMN verified INTEGER DEFAULT 0`],
+    ['verified_at',        `ALTER TABLE procedural_memories ADD COLUMN verified_at INTEGER`],
+    ['os',                 `ALTER TABLE procedural_memories ADD COLUMN os TEXT`],
+    ['tool',               `ALTER TABLE procedural_memories ADD COLUMN tool TEXT`],
+    ['success_count',      `ALTER TABLE procedural_memories ADD COLUMN success_count INTEGER DEFAULT 0`],
+    ['failure_count',      `ALTER TABLE procedural_memories ADD COLUMN failure_count INTEGER DEFAULT 0`],
+    ['error_text',         `ALTER TABLE procedural_memories ADD COLUMN error_text TEXT`],               // post-redaction
+    ['failing_command',    `ALTER TABLE procedural_memories ADD COLUMN failing_command TEXT`],
+  ];
+  for (const [col, sql] of migrations) {
+    if (!existing.has(col)) db.exec(sql);
+  }
+
+  // Indexes for the new lookup patterns. error_fingerprints is JSON, so we
+  // can only do LIKE-based queries — the index helps narrow the scan.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_procedural_tool        ON procedural_memories(tool);
+    CREATE INDEX IF NOT EXISTS idx_procedural_verified    ON procedural_memories(verified);
+    CREATE INDEX IF NOT EXISTS idx_procedural_fingerprint ON procedural_memories(error_fingerprints);
+  `);
+}
+
+// ── Terminal Copilot lookups ────────────────────────────────────────────────
+
+/** A runbook row enriched with the Terminal Copilot fields. */
+export interface ExtendedProcedural extends ProceduralMemory {
+  trigger_phrases: string[];
+  error_fingerprints: string[];
+  verified: boolean;
+  verified_at: number | null;
+  os: string | null;
+  tool: string | null;
+  success_count: number;
+  failure_count: number;
+  error_text: string | null;
+  failing_command: string | null;
+}
+
+function rowToExtended(row: Record<string, unknown>): ExtendedProcedural {
+  const tryParseArray = (s: unknown): string[] => {
+    if (typeof s !== 'string' || !s) return [];
+    try {
+      const v = JSON.parse(s);
+      return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    id: String(row.id),
+    namespace: String(row.namespace),
+    name: String(row.name),
+    summary: String(row.summary),
+    steps: (() => {
+      try {
+        const v = JSON.parse(String(row.steps_json ?? '[]'));
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    })(),
+    tools: tryParseArray(row.tools_json),
+    last_used_at: Number(row.last_used_at ?? 0),
+    use_count: Number(row.use_count ?? 0),
+    created_at: Number(row.created_at ?? 0),
+    trigger_phrases: tryParseArray(row.trigger_phrases),
+    error_fingerprints: tryParseArray(row.error_fingerprints),
+    verified: Number(row.verified ?? 0) === 1,
+    verified_at: row.verified_at == null ? null : Number(row.verified_at),
+    os: typeof row.os === 'string' ? row.os : null,
+    tool: typeof row.tool === 'string' ? row.tool : null,
+    success_count: Number(row.success_count ?? 0),
+    failure_count: Number(row.failure_count ?? 0),
+    error_text: typeof row.error_text === 'string' ? row.error_text : null,
+    failing_command: typeof row.failing_command === 'string' ? row.failing_command : null,
+  };
+}
+
+/**
+ * Find runbooks whose stored `error_fingerprints` array contains the given hash.
+ * Exact-string match against the JSON-encoded array via LIKE; the
+ * `idx_procedural_fingerprint` index narrows the scan.
+ */
+export function matchByFingerprint(
+  db: Database.Database,
+  hash: string,
+  namespace?: string,
+): ExtendedProcedural[] {
+  const pattern = `%"${hash}"%`;
+  const rows = namespace
+    ? (db
+        .prepare(
+          `SELECT * FROM procedural_memories
+            WHERE namespace = ? AND error_fingerprints LIKE ?
+            ORDER BY verified DESC, success_count DESC, last_used_at DESC
+            LIMIT 5`,
+        )
+        .all(namespace, pattern) as Array<Record<string, unknown>>)
+    : (db
+        .prepare(
+          `SELECT * FROM procedural_memories
+            WHERE error_fingerprints LIKE ?
+            ORDER BY verified DESC, success_count DESC, last_used_at DESC
+            LIMIT 5`,
+        )
+        .all(pattern) as Array<Record<string, unknown>>);
+  return rows.map(rowToExtended);
+}
+
+/** Find runbooks scoped to a given tool family (e.g. all "git" runbooks). */
+export function matchByTool(
+  db: Database.Database,
+  tool: string,
+  namespace?: string,
+  limit: number = 5,
+): ExtendedProcedural[] {
+  const rows = namespace
+    ? (db
+        .prepare(
+          `SELECT * FROM procedural_memories
+            WHERE namespace = ? AND tool = ?
+            ORDER BY verified DESC, success_count DESC, last_used_at DESC
+            LIMIT ?`,
+        )
+        .all(namespace, tool, limit) as Array<Record<string, unknown>>)
+    : (db
+        .prepare(
+          `SELECT * FROM procedural_memories
+            WHERE tool = ?
+            ORDER BY verified DESC, success_count DESC, last_used_at DESC
+            LIMIT ?`,
+        )
+        .all(tool, limit) as Array<Record<string, unknown>>);
+  return rows.map(rowToExtended);
+}
+
+/**
+ * Append a new fingerprint hash to an existing runbook's
+ * `error_fingerprints` JSON array (no-op if already present), and
+ * optionally bump success/failure counters and verified flag.
+ */
+export function recordRunbookOutcome(
+  db: Database.Database,
+  runbookId: string,
+  args: {
+    fingerprintHash?: string;
+    outcome?: 'success' | 'failure';
+    verified?: boolean;
+    os?: string;
+    tool?: string;
+    failingCommand?: string;
+    errorText?: string;
+    extraSteps?: Array<{ step: string; code?: string; why?: string }>;
+  },
+): void {
+  const row = db
+    .prepare(`SELECT error_fingerprints, steps_json FROM procedural_memories WHERE id = ?`)
+    .get(runbookId) as { error_fingerprints: string | null; steps_json: string } | undefined;
+  if (!row) throw new Error(`runbook not found: ${runbookId}`);
+
+  // Merge fingerprint
+  const fps = (() => {
+    try {
+      const v = JSON.parse(row.error_fingerprints ?? '[]');
+      return Array.isArray(v) ? (v as string[]) : [];
+    } catch {
+      return [] as string[];
+    }
+  })();
+  if (args.fingerprintHash && !fps.includes(args.fingerprintHash)) fps.push(args.fingerprintHash);
+
+  // Merge steps (append extras at end; preserve existing order)
+  let steps: Array<{ step: string; code?: string; why?: string }> = [];
+  try {
+    const v = JSON.parse(row.steps_json ?? '[]');
+    if (Array.isArray(v)) steps = v;
+  } catch {
+    /* fall through */
+  }
+  if (args.extraSteps?.length) steps.push(...args.extraSteps);
+
+  const sets: string[] = [
+    `error_fingerprints = ?`,
+    `steps_json = ?`,
+    `last_used_at = ?`,
+    `use_count = use_count + 1`,
+  ];
+  const vals: Array<string | number | null> = [
+    JSON.stringify(fps),
+    JSON.stringify(steps),
+    Date.now(),
+  ];
+  if (args.outcome === 'success') {
+    sets.push(`success_count = success_count + 1`);
+  } else if (args.outcome === 'failure') {
+    sets.push(`failure_count = failure_count + 1`);
+  }
+  if (args.verified === true) {
+    sets.push(`verified = 1`, `verified_at = ?`);
+    vals.push(Date.now());
+  }
+  if (typeof args.os === 'string') {
+    sets.push(`os = ?`);
+    vals.push(args.os);
+  }
+  if (typeof args.tool === 'string') {
+    sets.push(`tool = ?`);
+    vals.push(args.tool);
+  }
+  if (typeof args.failingCommand === 'string') {
+    sets.push(`failing_command = ?`);
+    vals.push(args.failingCommand);
+  }
+  if (typeof args.errorText === 'string') {
+    sets.push(`error_text = ?`);
+    vals.push(args.errorText);
+  }
+  vals.push(runbookId);
+  db.prepare(`UPDATE procedural_memories SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 }
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────

@@ -80,11 +80,27 @@ const NEIGHBOR_RADIUS = 2;
 const RETRIEVAL_TOKEN_BUDGET = 7000;
 
 // Cached cross-encoder reranker — loaded lazily on first search.
+//
+// Model history:
+//   - Xenova/ms-marco-MiniLM-L-6-v2 (initial): trained on MS MARCO web-passage
+//     queries. On LoCoMo dialog text it scored lower than the no-rerank
+//     baseline — the training distribution doesn't match "Speaker: utterance"
+//     conversational chunks. Latency ~160 ms/query.
+//   - Xenova/bge-reranker-base (current): BAAI multilingual retrieval
+//     reranker. Trained on broader query<->document pairs including
+//     conversational and instructional text. Same size class (~120 MB),
+//     comparable latency, dialog-aware.
+//
+// Override via the MNUERON_BENCH_RERANKER_MODEL env var to A/B another model
+// without editing code (e.g. Xenova/bge-reranker-v2-m3, Xenova/mxbai-rerank-xsmall-v1).
+const RERANKER_MODEL =
+  process.env.MNUERON_BENCH_RERANKER_MODEL ?? 'Xenova/bge-reranker-base';
+
 let cachedReranker: any = null;
 async function getReranker(): Promise<any> {
   if (cachedReranker) return cachedReranker;
   const { pipeline } = await import('@xenova/transformers');
-  cachedReranker = await pipeline('text-classification', 'Xenova/ms-marco-MiniLM-L-6-v2');
+  cachedReranker = await pipeline('text-classification', RERANKER_MODEL);
   return cachedReranker;
 }
 

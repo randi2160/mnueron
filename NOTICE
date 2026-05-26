@@ -1,11 +1,15 @@
 Mnueron
 Copyright 2026 Mnueron
 
-This product is licensed under the Apache License, Version 2.0 (the
-"License"); you may not use this product except in compliance with
-the License. You may obtain a copy of the License at:
+This repository uses a split license model.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+  Default (everything not under server/ or dashboard-web/):
+    MIT License — see LICENSE
+
+  Hosted backend (server/ and future dashboard-web/):
+    Functional Source License 1.1, Apache 2.0 Future License (FSL-1.1-Apache-2.0)
+    See server/LICENSE
+    Each version auto-converts to Apache 2.0 two years after release.
 
 ----------------------------------------------------------------------
 Mnueron Additional Notices
@@ -15,9 +19,7 @@ Mnueron is an open-source memory infrastructure platform designed to
 provide persistent memory, context synchronization, semantic retrieval,
 and workflow intelligence for AI systems, agents, IDEs, and applications.
 
-The Mnueron source code is licensed under Apache License 2.0.
-
-The following are NOT granted under this license:
+The following are NOT granted under either license in this repository:
 
 - The Mnueron name
 - The Mnueron logo
@@ -36,21 +38,42 @@ that implies endorsement, affiliation, or official association
 without prior written permission.
 
 ----------------------------------------------------------------------
-Open Source Components
+Hosted-Features Carve-Out
 ----------------------------------------------------------------------
 
-This repository may contain optional integrations, connectors, SDKs,
-plugins, browser extensions, MCP servers, local dashboards,
-or synchronization modules.
+Some features that are conceptually part of the hosted Mnueron product
+surface may, for engineering reasons, touch files outside server/.
+For clarity, contributions that extend or modify the following
+hosted-product features are accepted under FSL-1.1-Apache-2.0 terms
+even when they live in client directories:
+
+- Multi-tenant plumbing (org scoping, tenant isolation helpers)
+- Row-Level Security (RLS) aware client patches
+- Billing hooks and Stripe integration glue
+- Audit log emitters that target the hosted backend
+- SSO / SAML / SCIM integration code that depends on the hosted
+  identity service
+- Telemetry on the hosted edge (rate limiting, quota enforcement,
+  hosted-tier metrics)
+- Hosted-only dashboard surfaces (when dashboard-web/ is built)
+
+This carve-out is narrow. If you are touching files under src/, sdks/,
+extension/, dashboard/, examples/, or scripts/ for any reason that is
+not directly implementing or supporting one of the items above, your
+contribution is under MIT.
 
 Contributors retain copyright to their respective contributions.
 
 By submitting a contribution to this repository, you agree that:
 
-1. Your contribution is licensed under Apache License 2.0.
+1. Your contribution is licensed under MIT if it lives in client
+   directories, OR FSL-1.1-Apache-2.0 if it lives in server/ /
+   dashboard-web/ or extends a hosted-features carve-out item above.
 2. You have the legal right to submit the contribution.
-3. You grant Mnueron and its users the rights described
-   under Apache 2.0.
+3. You grant Mnueron and its users the rights described under the
+   applicable license.
+
+See CLA.md for the formal Contributor License Agreement text.
 
 ----------------------------------------------------------------------
 Privacy & Data Usage Notice
@@ -121,14 +144,11 @@ through AI systems connected to Mnueron.
 Website & Hosted Platform
 ----------------------------------------------------------------------
 
-The Apache 2.0 license applies only to the open-source
-components explicitly distributed under this repository.
-
-The hosted Mnueron platform, cloud synchronization service,
-website infrastructure, billing systems, analytics systems,
-and proprietary backend services may operate under separate
-commercial terms and are not automatically covered by this
-open-source license.
+Neither the MIT license (root LICENSE) nor the FSL (server/LICENSE)
+applies to the running hosted Mnueron platform, cloud synchronization
+service, website infrastructure, billing systems, analytics systems,
+or proprietary backend services. Those operate under separate
+commercial terms.
 
 ----------------------------------------------------------------------
 Official Project

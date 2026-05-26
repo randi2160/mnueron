@@ -24,13 +24,15 @@ might have discussed before. Signs the user expects you to recall:
 ## How to use
 
 Call the `memory_recall` MCP tool with a natural-language query and the
-namespace the user works in (most commonly `elevizio` or
-`claude-cowork`). Limit to 5 results unless the user asks for more.
+namespace the user works in. Default to `mnueron` for general work, use
+project namespaces such as `elevizio` when the user names that project,
+and use `claude-cowork` for raw imported Cowork sessions. Limit to 5
+results unless the user asks for more.
 
 ```
 memory_recall({
   query: "<the question, paraphrased>",
-  namespace: "elevizio",
+  namespace: "mnueron",
   k: 5
 })
 ```
@@ -81,8 +83,8 @@ future sessions, call `memory_save`:
 
 ```
 memory_save({
-  content: "Decision: we use the 'elevizio' namespace for all mnueron + Cowork work because that's where the original import landed.",
-  namespace: "elevizio",
+  content: "Decision: use the 'mnueron' namespace for general Mnueron work; use project namespaces like 'elevizio' only when the memory is project-specific.",
+  namespace: "mnueron",
   tags: ["decision", "namespace"]
 })
 ```

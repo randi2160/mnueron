@@ -6,9 +6,13 @@ and bug fixes. Here's how the process works.
 
 ## Before you start
 
-- **Read [`PLAN.md`](PLAN.md)** — it's the current product roadmap. If your
-  idea isn't in there or you're not sure how it fits, open an Issue first
-  and let's talk about it before you write code.
+- **Read [`ROADMAP.md`](ROADMAP.md)** — the contributor-facing roadmap with
+  concrete items open for community work, grouped by `good first issue`,
+  `help wanted`, and `discuss first`. Start here if you don't have a
+  specific idea yet.
+- **Read [`PLAN.md`](PLAN.md)** — internal product roadmap (pricing,
+  dashboard mockups, strategy). Read if you want maximum context;
+  everything contributor-relevant is mirrored to `ROADMAP.md`.
 - **Read [`DEVELOPMENT.md`](DEVELOPMENT.md)** — engineering runbook,
   including the verification recipes for each subsystem and the catalog of
   gotchas we've hit. Saves you from rediscovering them.

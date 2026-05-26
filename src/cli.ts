@@ -16,6 +16,9 @@ import { importClaudeExport } from './import/claude.js';
 import { importOpenAIExport } from './import/openai.js';
 import { runSetup, formatReport, type SetupOptions } from './setup.js';
 import { extractEntities } from './store/entity-extractor.js';
+import { cmdExplainError } from './runbook/explain.js';
+import { cmdRunbookCapture } from './runbook/capture.js';
+import { cmdRunbookAutoExtract } from './runbook/auto-extract.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +43,8 @@ async function main() {
     case 'graph':        return cmdGraph(rest);     // P3 + P4 — knowledge graph
     case 'consolidate':  return cmdConsolidate(rest); // P5 — detection-only review queue
     case 'procedural':   return cmdProcedural(rest);  // Procedural memory (Mem0 leapfrog)
+    case 'explain-error': return cmdExplainError(rest);  // Terminal Copilot — paste-an-error → suggestions
+    case 'runbook':      return cmdRunbook(rest);        // Terminal Copilot — capture/list/show
     case 'watch':        return cmdWatch(rest);
     case 'help':
     case '--help':
@@ -2084,6 +2089,46 @@ async function cmdWatch(args: string[]) {
     await runCoworkWatch(provider, { intervalMs, namespace: ns, once });
   } finally {
     await provider.close();
+  }
+}
+
+// ── Terminal Copilot dispatcher ────────────────────────────────────────────
+//
+// `mnueron runbook <sub>` routes to the right handler. For the MVP we ship
+// `capture` (the interactive wizard); `list` and `show` delegate to the
+// existing `cmdProcedural` so users can use either name. Phase 2 will add
+// verify/unverify and Phase 4 will add the apply-with-approval runner.
+async function cmdRunbook(args: string[]) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'capture':
+      return cmdRunbookCapture(rest);
+    case 'auto-extract':
+      return cmdRunbookAutoExtract(rest);
+    case 'list':
+      return cmdProcedural(['list', ...rest]);
+    case 'show':
+      return cmdProcedural(['show', ...rest]);
+    case 'delete':
+      return cmdProcedural(['delete', ...rest]);
+    case undefined:
+    case 'help':
+    case '--help':
+    case '-h':
+      console.log(`mnueron runbook — Terminal Copilot runbook management
+
+  mnueron runbook capture                       Interactive wizard to save a runbook after fixing an issue
+  mnueron runbook auto-extract [--since <h>]    Auto-generate runbooks from recent Cowork chats (uses LLM)
+  mnueron runbook list [--ns <name>]            List saved runbooks (alias for 'procedural list')
+  mnueron runbook show <name> [--ns <name>]     Show a runbook's steps (alias for 'procedural show')
+  mnueron runbook delete <id>                   Delete a runbook by id
+
+To find a runbook for an error you just hit:
+  mnueron explain-error                         Paste your error, get suggested fixes`);
+      return;
+    default:
+      console.error(`Unknown runbook subcommand: ${sub}`);
+      process.exit(1);
   }
 }
 

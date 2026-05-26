@@ -733,6 +733,7 @@ export class LocalProvider implements Provider {
 
   async search(input: SearchInput): Promise<Memory[]> {
     const k = input.k ?? 10;
+    const candidateLimit = Math.max(100, Math.min(300, k * 5));
 
     // FTS5 leg — now honors all MemoryFilters (date range + metadata filter).
     const safeQuery = buildFtsQuery(input.query);
@@ -747,8 +748,8 @@ export class LocalProvider implements Provider {
           AND ${filter.sql}
       `;
       const params: unknown[] = [safeQuery, ...filter.params];
-      sql += ` ORDER BY bm25(memories_fts) LIMIT 50`;
-      const rows = this.db.prepare(sql).all(...params) as any[];
+      sql += ` ORDER BY bm25(memories_fts) LIMIT ?`;
+      const rows = this.db.prepare(sql).all(...params, candidateLimit) as any[];
       rows.forEach((r, i) => ftsRanks.set(r.id, i + 1));
     }
 
@@ -770,7 +771,7 @@ export class LocalProvider implements Provider {
             WHERE embedding MATCH ?
               AND k = ?
             ORDER BY distance
-          `).all(Buffer.from(qvec.buffer), 50) as Array<{ id: string; distance: number }>;
+          `).all(Buffer.from(qvec.buffer), candidateLimit) as Array<{ id: string; distance: number }>;
 
           let candidates = rows.map(r => r.id);
 

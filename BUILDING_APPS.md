@@ -100,6 +100,116 @@ mem.save(anonymize(content), namespace="global-anonymized") # global
 
 ---
 
+## Recall patterns
+
+Saving is the easy half. Recall is where most apps either feel
+magical or feel like they're hallucinating. The patterns below
+are the ones that hold up at scale.
+
+For end-user recall via Claude itself (Claude Desktop, Claude Code,
+Cursor, etc.), see [`RECALL_AND_CONSOLIDATION.md`](RECALL_AND_CONSOLIDATION.md).
+This section is about calling recall from your own application code.
+
+### Pattern 1 — Bounded context injection
+
+The most common shape: before calling your LLM, recall the top-k
+most relevant memories for the current turn and inject them into
+the prompt.
+
+```python
+# At every LLM call, scope to the user and limit context size.
+results = mem.search(
+    query=user_message,
+    namespace=f"user-{user_id}",
+    k=5,
+)
+context = "\n\n".join(r.content for r in results)
+prompt = f"Relevant prior context:\n{context}\n\nUser: {user_message}"
+```
+
+**Tune `k` to your token budget.** Each result is the full memory
+content, not the preview. 5 is a safe default for chat-sized
+memories; 2–3 for long documents.
+
+### Pattern 2 — Preview-first, fetch-on-demand
+
+For interactive UIs (search bars, "what do I know about X" panels),
+don't fetch full content up-front. The hybrid search returns
+previews (~800 chars) plus ids; let the user click through to
+expand.
+
+```python
+hits = mem.search(query=q, namespace=ns, k=20)  # previews only
+# render hits[i].content_preview in the UI
+# on click → mem.get(hits[i].id) for the full text
+```
+
+This keeps recall latency low and avoids paying for content the
+user never reads.
+
+### Pattern 3 — Tag-scoped recall
+
+Tags are how you carve a namespace into facets without exploding
+your namespace count. Useful when one logical owner has multiple
+kinds of memory.
+
+```python
+# Save with type tags
+mem.save(meeting_transcript, namespace=f"user-{uid}", tags=["meeting", "transcript"])
+mem.save(decision_log,       namespace=f"user-{uid}", tags=["decision"])
+
+# Recall only decisions, not transcripts
+results = mem.search(
+    query="why did we pick Postgres",
+    namespace=f"user-{uid}",
+    tags=["decision"],
+)
+```
+
+### Pattern 4 — Thread reconstruction
+
+For chat-import sources, each saved memory has a `source_ref`
+linking back to its parent thread. To get the full conversation
+back from any single hit:
+
+```python
+hit = mem.search(query=q, namespace=ns, k=1)[0]
+thread = mem.get_thread(hit.source_ref)  # full chain in order
+```
+
+This is the right call when one memory is interesting but you
+need the surrounding turns to make sense of it.
+
+### Pattern 5 — Hybrid search is doing real work — let it
+
+mnueron's recall fuses FTS5 keyword search and sqlite-vec
+semantic similarity via Reciprocal Rank Fusion. **You don't need
+to pre-process the query.** Natural-language queries beat
+keyword-extracted ones in almost every benchmark we've run.
+
+```python
+# ✅ Just pass the user's message through
+mem.search(query=user_message, namespace=ns)
+
+# ❌ Don't do this — you lose semantic signal
+keywords = extract_keywords(user_message)
+mem.search(query=" ".join(keywords), namespace=ns)
+```
+
+### Anti-patterns
+
+- **Recalling from a global namespace.** Same data-leak risk as the
+  save side; see "Multi-tenant patterns".
+- **Caching recall results across users.** Recall is cheap;
+  cross-user cache hits are a security incident.
+- **Re-embedding the query yourself.** mnueron handles embedding on
+  the server side. Sending pre-embedded queries breaks the hybrid
+  fusion.
+- **Using `memory_list` as search.** `list` is for browsing recency,
+  not relevance. Use `search` for "what do we know about X".
+
+---
+
 ## Audio + LLM integration
 
 Common stack for transcription apps:

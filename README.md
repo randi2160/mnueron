@@ -117,18 +117,33 @@ That's it. Published on npm: <https://www.npmjs.com/package/mnueron>.
 
 #### From source (for contributors)
 
-If you want to hack on mnueron itself, install from a local clone:
+If you want to hack on mnueron itself, the contributor quick start is one screen:
 
 ```bash
+# 1. Clone + install
 git clone https://github.com/randi2160/mnueron.git
 cd mnueron
 npm install
+
+# 2. Build + smoke test (~30 seconds — verifies your environment)
 npm run build
-npm link            # makes your local build the global `mnueron` command
-mnueron setup
+npm test                # runs scripts/smoke.mjs end-to-end
+
+# 3. Make your local build the global `mnueron` command
+npm link
+mnueron setup           # wire it into your AI tools
+
+# 4. Iterate
+npm run dev             # tsx watch mode — re-runs on save
+npm run typecheck       # tsc --noEmit, catches type errors fast
 ```
 
 To switch back to the published version: `npm unlink -g mnueron && npm install -g mnueron`.
+
+**Your first PR in 5 minutes:** read [`CONTRIBUTING.md`](CONTRIBUTING.md) (branch
+naming, CLA, PR checklist) and [`DEVELOPMENT.md`](DEVELOPMENT.md) (engineering
+runbook, verification recipes per subsystem). Both are short and assume you've
+already done the steps above.
 
 ### What `mnueron setup` does
 

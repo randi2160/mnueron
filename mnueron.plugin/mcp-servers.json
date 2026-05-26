@@ -8,7 +8,7 @@
       "env": {
         "MNUERON_API_URL": "https://www.mnueron.com",
         "MNUERON_API_TOKEN": "${MNUERON_API_TOKEN}",
-        "MNUERON_NAMESPACE": "elevizio"
+        "MNUERON_NAMESPACE": "mnueron"
       },
       "description": "mnueron memory MCP server — talks to the hosted backend at mnueron.com via the user's bearer token. Set MNUERON_API_TOKEN as an environment variable before launching Cowork. To use local SQLite instead, omit MNUERON_API_URL + MNUERON_API_TOKEN and the server falls back to ~/.mnueron/memories.db."
     }

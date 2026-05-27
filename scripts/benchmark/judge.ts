@@ -74,20 +74,53 @@ export async function generateAnswer(
         'You answer questions about a conversation using the retrieved memories below as your primary source. ' +
         'The memories are dialog turns (or short windows of consecutive turns) prefixed with [N] and an optional (timestamp). ' +
         'For temporal questions the memories are pre-sorted in chronological order (oldest first). ' +
-        'You may combine information across multiple memories to answer multi-hop questions. ' +
-        'You may infer the answer when it is clearly implied by the memories, even if not stated word-for-word. ' +
-        '\n\nTEMPORAL QUESTIONS (when, how long ago, before/after, what date, how many days/weeks/months): ' +
+        '\n\n' +
+        'ABOUT THIS BENCHMARK: many questions are ADVERSARIAL. They are designed to look ' +
+        'answerable from circumstantial or near-miss memories that mention related people, places, ' +
+        'topics, or time periods but do NOT actually contain the specific fact asked about. ' +
+        'The benchmark rewards "NO_ANSWER" when no answer exists in the memories and penalizes ' +
+        'confident-but-wrong guesses equally with wrong answers. Refuse when in doubt. ' +
+        '\n\n' +
+        'BEFORE answering, run this 3-step verification: ' +
+        '(1) Is the specific entity (person, place, thing, event) from the question present in the memories? ' +
+        '(2) Is the specific attribute being asked about (color, number, date, name, preference, action, location) EXPLICITLY stated about that entity in the memories? ' +
+        '(3) Would you have to guess between multiple plausible values, or fill in a value the memories don\'t actually contain? ' +
+        '\n\n' +
+        'If (1) or (2) is no, OR (3) is yes → reply exactly: NO_ANSWER ' +
+        '\nOtherwise → answer concisely. ' +
+        '\n\n' +
+        'WHAT COUNTS AS "EXPLICITLY STATED": ' +
+        '- A direct quote or paraphrase of the speaker saying the exact fact ("I love hiking" → yes, you can answer "what does X love"). ' +
+        '- A clear factual statement about the entity ("Sarah is a vegan" → yes, you can answer "is Sarah vegetarian"). ' +
+        '- A timestamp on a memory ("(2024-03-15) ...") → yes, you can answer "when did X happen" if X is the subject of that memory. ' +
+        '\nNOT EXPLICITLY STATED: ' +
+        '- The speaker mentions a related topic but never states the specific fact. ' +
+        '- The memories show the speaker doing similar things in similar places but never the exact one asked. ' +
+        '- You\'d need to assume the speaker\'s preference, motivation, or future action from partial evidence. ' +
+        '\n\n' +
+        'MULTI-HOP QUESTIONS — combining facts is ALLOWED only when each piece is explicitly stated: ' +
+        '"Where does Sarah work + what did her boss say" → fine if both are in the memories. ' +
+        '"What restaurant did Sarah recommend to her vegan friend" → only fine if the memories actually state Sarah recommended a restaurant to a vegan friend; not fine if you have to infer "Sarah is vegan + her friend ate at X → Sarah recommended X". ' +
+        '\n\n' +
+        'COMMONSENSE QUESTIONS — clear implication is OK: ' +
+        'If memories establish "Sarah is a vegan" and the question asks "would Sarah enjoy a steakhouse", that is a clear implication and you should answer "no". ' +
+        'But if the memories say "Sarah went out to dinner Friday" and the question asks "did Sarah enjoy her dinner", refuse — the memories don\'t state her enjoyment. ' +
+        '\n\n' +
+        'TEMPORAL QUESTIONS (when, how long ago, before/after, what date, how many days/weeks/months): ' +
         'Use the CURRENT DATE given below as "now" if provided; otherwise treat the most recent timestamp in the set as "now". ' +
         'For "how long ago did X happen", compute the difference between X\'s timestamp and "now" in the unit asked (days, weeks, months). ' +
         'For "when did X happen", give the actual date from X\'s timestamp, not a relative phrase. ' +
         'For "before/after Y", compare timestamps directly and state the order. ' +
         'Always show the timestamps you used in parentheses at the end. ' +
-        '\n\nMULTI-PART QUESTIONS (asking for multiple items, names, or a list): ' +
+        'If the question asks about a date/duration the memories do not have timestamped evidence for, reply NO_ANSWER — do not guess. ' +
+        '\n\n' +
+        'MULTI-PART QUESTIONS (asking for multiple items, names, or a list): ' +
         'Enumerate ALL relevant items found across the retrieved memories. Do not stop at the first match. ' +
         'If the gold likely contains a count + a list (e.g. "3 things: A, B, C"), include both the count and the items. ' +
-        '\n\nOnly reply with "NO_ANSWER" if zero retrieved memories touch the topic at all. ' +
-        'Prefer a confident best-guess from partial evidence over a refusal. ' +
-        'Be concise — one short sentence when possible, but include every detail the question asks for. Do not pad with caveats or hedges like "based on the memories".' +
+        'If only SOME of the requested items are in the memories, list those and don\'t fabricate the rest. ' +
+        '\n\n' +
+        'Be concise — one short sentence when possible. Do not pad with caveats or hedges like "based on the memories". ' +
+        'When refusing, reply EXACTLY "NO_ANSWER" — no other text, no explanation.' +
         nowAnchor,
     },
     {

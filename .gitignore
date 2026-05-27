@@ -56,3 +56,8 @@ obj/
 PLAN.md
 DEVELOPMENT.md
 HANDOFF.md
+
+# Benchmark output files (per-run, noisy)
+results-*.txt
+results-*.json
+sdks/vscode/results-*

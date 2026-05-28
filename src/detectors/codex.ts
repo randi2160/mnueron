@@ -56,6 +56,10 @@ export class CodexDetector implements ToolDetector {
   install(serverName: string, entry: McpServerEntry): InstallResult {
     const path = this.configPath();
     mkdirSync(dirname(path), { recursive: true });
+    const codexEntry: McpServerEntry = {
+      ...entry,
+      command: entry.command === 'node' ? process.execPath : entry.command,
+    };
 
     let raw = '';
     if (existsSync(path)) {
@@ -68,7 +72,7 @@ export class CodexDetector implements ToolDetector {
 
     const before = raw;
     const withoutOld = removeServerBlock(raw, serverName).trimEnd();
-    const next = `${withoutOld}${withoutOld ? '\n\n' : ''}${formatServerBlock(serverName, entry)}\n`;
+    const next = `${withoutOld}${withoutOld ? '\n\n' : ''}${formatServerBlock(serverName, codexEntry)}\n`;
     const changed = before !== next;
 
     writeFileSync(path, next);

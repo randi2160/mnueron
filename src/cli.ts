@@ -220,7 +220,12 @@ async function cmdSetup(args: string[]) {
   const reports = await runSetup(opts);
   console.log(formatReport(reports));
 
-  const ok = reports.some(r => r.status === 'configured' || r.status === 'updated' || r.status === 'uninstalled');
+  const ok = reports.some(r =>
+    r.status === 'configured' ||
+    r.status === 'updated' ||
+    r.status === 'unchanged' ||
+    r.status === 'uninstalled'
+  );
   if (ok && !opts.dryRun && !opts.uninstall) {
     console.log(`\n✨ Done. Restart any running AI tool to load the memory plugin.`);
     console.log(`   Then ask it: "What memory tools do you have?"`);

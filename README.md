@@ -3,7 +3,7 @@
 </p>
 
 <p align="center"><strong>One memory layer. Every LLM. Every dev tool. Every app you build.</strong></p>
-<p align="center"><sub>Persistent memory for Claude Desktop · Claude Code · Cursor · Windsurf · Cline — local-first, free forever, open source (MIT).</sub></p>
+<p align="center"><sub>Persistent memory for Claude Desktop · Claude Code · Codex · Cursor · Windsurf · Cline — local-first, free forever, open source (MIT).</sub></p>
 
 ---
 
@@ -11,7 +11,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                                                                         │
 │   Dev tools:                                                            │
-│   Claude Desktop · Claude Code · Cursor · Windsurf · Cline ──► MCP ─┐   │
+│   Claude Desktop · Claude Code · Codex · Cursor · Windsurf · Cline ──► MCP ─┐   │
 │                                                                     │   │
 │   Your apps:                                                        ├─► │
 │   Python SDK · C# SDK · TypeScript · REST ─────────────────────────┘   │
@@ -40,6 +40,7 @@ What changes day-to-day:
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history. Headlines:
 
+- **Codex officially supported** — `mnueron setup --only codex` writes `~/.codex/config.toml` and the nine `memory_*` tools plus the procedural/runbook surface light up after a clean Codex restart. See [INSTALL.md](INSTALL.md#troubleshooting) for the Windows multi-process restart gotcha.
 - **`mnueron primer`** — emit a CLAUDE.md / cursorrules-style memory primer (`mnueron primer > CLAUDE.md`)
 - **5 more IDE detectors** — Continue, Zed, Aider, Goose, OpenCode
 - **Platform API gaps closed** — date-range filter, PATCH update, bulk search, metadata-field filter
@@ -350,7 +351,7 @@ NuGet package required.
 
 ```
 mnueron setup                       Detect and configure all installed AI tools
-       [--only <tool>]                claude-desktop | claude-code | cursor | windsurf | cline
+       [--only <tool>]                claude-desktop | claude-code | codex | cursor | windsurf | cline
        [--hosted <url> --token <t>]   Hosted mode instead of local SQLite
        [--dry-run]                    Show what would change
        [--uninstall]                  Remove from all detected tools

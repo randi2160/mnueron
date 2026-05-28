@@ -303,6 +303,55 @@ Removes mnueron from every tool's MCP config. Your local memories at
   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 - Look for a `mcpServers.mnueron` entry. If missing, re-run `setup`.
 
+**Codex doesn't see the memory tools after setup.**
+
+Codex reads `~/.codex/config.toml` **once at startup**, and on Windows it's an
+Electron multi-process app — closing the window does not kill the main process.
+That means a config edit (from `mnueron setup --only codex` or by hand) won't
+be picked up until every Codex process is killed and Codex is launched fresh.
+
+Quick check + force-restart on Windows (PowerShell):
+
+```powershell
+# 1. Confirm mnueron is registered in the config.
+Get-Content $HOME\.codex\config.toml | Select-String -Pattern "mnueron" -Context 0,6
+
+# 2. Kill every Codex process — GUI shell AND CLI helper.
+Get-Process | Where-Object { $_.ProcessName -ieq "codex" } | Stop-Process -Force
+
+# 3. Verify nothing is left.
+Get-Process | Where-Object { $_.ProcessName -ieq "codex" }
+
+# 4. Relaunch Codex normally. In a new chat, ask: "what MCP tools are loaded?"
+#    The mnueron tools (memory_save, memory_recall, memory_namespaces, …)
+#    should appear.
+```
+
+If the config block from step 1 looks right (`command = "…node.exe"`,
+`args = ["…\\dist\\index.js"]`) but Codex still shows no mnueron tools after a
+clean restart, check Codex's MCP log for spawn errors:
+
+```powershell
+Get-ChildItem $HOME\.codex\log -Recurse -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1 |
+  Get-Content -Tail 60
+```
+
+You should see a line like `[mnueron] mode=local ns=default db=…` — that's the
+mnueron MCP server starting cleanly on stderr. If you see a stack trace
+instead, that's the real failure (usually a Node version older than 20, a
+broken `better-sqlite3` native binding, or a typo in the `args` path).
+
+To verify the mnueron MCP server itself is healthy independent of Codex, send
+it an `initialize` JSON-RPC frame on stdin:
+
+```powershell
+$req = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+$req | node "C:\Path\To\mnueron\dist\index.js" 2>$env:TEMP\mnueron.err
+```
+
+A healthy server prints a JSON object with `"serverInfo":{"name":"mnueron","version":"…"}` and writes only the banner to `$env:TEMP\mnueron.err`.
+
 **`mnueron setup` says "tool not detected" but the tool is installed.**
 - Run the tool once before setup so it creates its config directory.
 - For Cursor, the detector looks for `~/.cursor/` — open Cursor once if it's a fresh install.

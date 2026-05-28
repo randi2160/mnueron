@@ -9,6 +9,40 @@ messages and PR descriptions.
 
 In the repo on `main` but not yet published.
 
+## [0.6.0] — 2026-05-28
+
+Officially adds **OpenAI Codex** as a first-class supported AI tool, plus the
+restart troubleshooting that was missing from the install docs.
+
+### Added (Codex support)
+- **`mnueron setup --only codex`** is now listed in CLI help and the README
+  tool enum (the underlying `CodexDetector` shipped earlier, but the docs and
+  the `--only` flag's published enum didn't advertise it).
+- **`~/.codex/config.toml` editing** is idempotent: only the `[mcp_servers.mnueron]`
+  block is rewritten, the rest of the TOML is untouched. (Unchanged behavior;
+  now documented.)
+- **INSTALL troubleshooting** has a dedicated "Codex doesn't see the memory
+  tools" block covering the gotcha that bit us on 2026-05-28: Codex is an
+  Electron multi-process app on Windows, closing the window doesn't kill the
+  main process, and `config.toml` is only read at true startup. The fix is
+  `Get-Process | Where-Object { $_.ProcessName -ieq "codex" } | Stop-Process -Force`
+  before relaunching.
+- **Python SDK 0.3.2** — version bump shipped alongside (no API changes;
+  republished so the version line in README's "What's new" reflects the
+  current state).
+
+### Verified end-to-end (2026-05-28)
+- `mnueron-mcp` (`dist/index.js`) confirmed clean on stderr — banner
+  `[mnueron] mode=local ns=… db=…` goes to `process.stderr.write` in both
+  `src/index.ts:38` and the compiled `dist/index.js:33`. Stdout stays a pure
+  JSON-RPC channel. `initialize` + `tools/list` round-trip works from a manual
+  stdin probe.
+- All nine memory tools (`memory_save`, `memory_recall`, `memory_get`,
+  `memory_get_thread`, `memory_list`, `memory_delete`, `memory_namespaces`,
+  `memory_import_chat`, `memory_import_cowork`) plus the procedural/runbook
+  surface (`procedural_*`, `recall_assist`, `runbook_suggest`,
+  `suggestion_outcome`) confirmed visible from Codex after a clean restart.
+
 ## [0.5.0] — 2026-05-23
 
 Major release. Procedural memory + entity resolution + knowledge graph +

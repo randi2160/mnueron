@@ -288,6 +288,108 @@ export const TOOL_DEFINITIONS = [
       required: ['id', 'outcome'],
     },
   },
+  {
+    name: 'recall_assist',
+    description:
+      'Contextual recall — given what the user is currently writing or discussing, search mnueron memory for HIGHLY RELEVANT past context. ' +
+      "Use this PROACTIVELY whenever the user describes a task they're working on, an error they're hitting, or a decision they're making — " +
+      'before answering from your general knowledge, check if mnueron has prior context. ' +
+      'Returns at most 3 suggestions, each with a confidence score. ONLY surface suggestions with confidence ≥ 0.75 by default. ' +
+      'Each suggestion is either a memory snippet or a runbook. Pass the user\'s active text + optional cwd; the tool classifies intent (coding / deploying / debugging / testing / documenting / planning / temporal), extracts entities, and searches the matching namespace. ' +
+      'Returns empty when nothing crosses the threshold — silence is correct behavior; do not fabricate results.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description:
+            "The user's active context — what they're currently writing, asking, or working on. " +
+            'Typically the last few sentences of the conversation or the active editor selection.',
+        },
+        cwd: {
+          type: 'string',
+          description:
+            "The user's current working directory (if known) — helps detect the project namespace.",
+        },
+        project: {
+          type: 'string',
+          description:
+            'Explicit project name override. Use when the cwd-based inference would be wrong.',
+        },
+        namespace_hints: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Additional namespaces to prefer in the search (beyond auto-inferred repo:/project:).',
+        },
+        confidence_threshold: {
+          type: 'number',
+          description:
+            'Minimum confidence to surface a suggestion. Default 0.75 (conservative). Lower to 0.5 only if user asks "show me anything".',
+        },
+        max_suggestions: {
+          type: 'number',
+          description: 'Maximum suggestions to return. Default 3.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'runbook_suggest',
+    description:
+      'Detect whether the user is currently DESCRIBING repeatable steps that could become a saved runbook. ' +
+      'Use after the user has finished explaining a multi-step procedure (deployment, setup, troubleshooting, etc.). ' +
+      'Returns whether the content looks runbook-shaped, a confidence score, the detected steps, and a suggested title. ' +
+      'If confidence ≥ 0.75, offer the user: "Save as a runbook?" — and on yes, call procedural memory save with the extracted steps. ' +
+      'Do NOT call this on every message; only when the user has clearly described a sequence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'The full conversation context or document section containing the candidate runbook.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'suggestion_outcome',
+    description:
+      'Record what happened with a suggestion that was previously returned. Use this AFTER the user has acted on (or ignored) a suggestion from recall_assist or runbook_suggest. ' +
+      "Drives the feedback loop that auto-tunes confidence thresholds — every recorded outcome trains mnueron to surface BETTER suggestions next time. " +
+      'Always record outcomes when you can — it costs nothing and improves the system.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_text: {
+          type: 'string',
+          description: "The active context that triggered the suggestion (the same text you passed to recall_assist).",
+        },
+        intent_kind: {
+          type: 'string',
+          description: 'The intent classified by recall_assist.',
+        },
+        action: {
+          type: 'string',
+          enum: ['accepted', 'ignored', 'saved_runbook', 'opened', 'shown'],
+          description:
+            'What happened: accepted = user used the suggestion; ignored = dismissed; saved_runbook = converted into a saved runbook; opened = clicked through to view; shown = displayed but no follow-up yet.',
+        },
+        surface: {
+          type: 'string',
+          enum: ['mcp', 'dashboard', 'vscode', 'chrome', 'cowork', 'cli'],
+          description: 'Which surface displayed the suggestion.',
+        },
+        acted_on_id: {
+          type: 'string',
+          description: 'The specific suggestion id the user acted on (for accepted / opened / saved_runbook actions).',
+        },
+      },
+      required: ['source_text', 'action', 'surface'],
+    },
+  },
 ];
 
 export async function handleToolCall(
@@ -584,6 +686,156 @@ export async function handleToolCall(
       const updated = await record.call(provider, id, outcome);
       if (!updated) throw new Error(`runbook not found: ${id}`);
       return updated;
+    }
+
+    // ─── Recall Assist (Phase 1) ──────────────────────────────────────
+    case 'recall_assist': {
+      const { analyzeContext, gateSurfacing, DEFAULT_CONFIG } = await import(
+        './lib/context-engine/index.js'
+      );
+      const text = String(args.text ?? '');
+      if (!text.trim()) {
+        return {
+          intent: { kind: 'none', confidence: 0, signals: [] },
+          suggestions: [],
+          fallback: 'No active context provided.',
+        };
+      }
+      const cwd = typeof args.cwd === 'string' ? args.cwd : undefined;
+      const project = typeof args.project === 'string' ? args.project : undefined;
+      const namespaceHints = Array.isArray(args.namespace_hints)
+        ? (args.namespace_hints as string[])
+        : [];
+      const threshold = typeof args.confidence_threshold === 'number'
+        ? Math.max(0, Math.min(1, args.confidence_threshold))
+        : DEFAULT_CONFIG.threshold;
+      const maxSuggestions = typeof args.max_suggestions === 'number'
+        ? Math.max(1, Math.min(10, args.max_suggestions))
+        : DEFAULT_CONFIG.maxSuggestions;
+
+      const signal = analyzeContext(text, { cwd, project, namespaceHints });
+      if (!signal.worthSearching) {
+        return {
+          intent: signal.intent,
+          entities: signal.entities,
+          suggestions: [],
+          fallback: 'Context too thin to search confidently.',
+        };
+      }
+
+      // Search each namespace hint in priority order, stopping when we
+      // have enough candidates above the floor.
+      const candidates: Array<{
+        id: string;
+        kind: 'memory' | 'runbook';
+        rawScore: number;
+        content: string;
+        namespace?: string;
+        verified?: boolean;
+        successCount?: number;
+        failureCount?: number;
+      }> = [];
+      const seenIds = new Set<string>();
+      const searchQuery = text.slice(0, 1000);
+      for (const ns of signal.namespaceHints) {
+        if (candidates.length >= maxSuggestions * 5) break;
+        try {
+          const results = await provider.search({
+            query: searchQuery,
+            namespace: ns,
+            k: maxSuggestions * 3,
+          });
+          for (const r of results) {
+            if (seenIds.has(r.id)) continue;
+            seenIds.add(r.id);
+            candidates.push({
+              id: r.id,
+              kind: 'memory',
+              rawScore: typeof (r as any).score === 'number' ? (r as any).score : 0.5,
+              content: r.content.slice(0, 500),
+              namespace: r.namespace,
+            });
+          }
+        } catch {
+          // Namespace doesn't exist — fine, just skip.
+        }
+      }
+
+      const surfaced = gateSurfacing(
+        candidates,
+        signal.intent,
+        signal.entities,
+        signal.runbookDetection,
+        { ...DEFAULT_CONFIG, threshold, maxSuggestions },
+      );
+
+      return {
+        intent: signal.intent,
+        entities: {
+          project: signal.entities.project,
+          files: signal.entities.files,
+          technologies: signal.entities.technologies,
+          tags: signal.entities.tags,
+        },
+        namespaceHints: signal.namespaceHints,
+        suggestions: surfaced.map(s => ({
+          id: s.id,
+          kind: s.kind,
+          content: s.content,
+          confidence: Number(s.confidence.toFixed(3)),
+          reason: s.reason,
+          namespace: s.namespace,
+        })),
+        ...(surfaced.length === 0 && {
+          fallback: 'No candidates crossed the confidence threshold. Try again with more context or lower confidence_threshold.',
+        }),
+      };
+    }
+
+    case 'runbook_suggest': {
+      const { detectRunbook } = await import('./lib/context-engine/runbook-detector.js');
+      const text = String(args.text ?? '');
+      if (!text.trim() || text.length < 30) {
+        return {
+          is_runbook_candidate: false,
+          confidence: 0,
+          detected_steps: [],
+          suggested_title: null,
+          signals: [],
+        };
+      }
+      const det = detectRunbook(text);
+      return {
+        is_runbook_candidate: det.isRunbook,
+        confidence: Number(det.confidence.toFixed(3)),
+        detected_steps: det.steps,
+        suggested_title: det.suggestedTitle,
+        signals: det.signals,
+      };
+    }
+
+    case 'suggestion_outcome': {
+      // Local-only no-op: the local provider doesn't have a
+      // suggestion_outcomes table (that's hosted-only). We still accept
+      // the call so MCP clients can use the same shape in both modes —
+      // hosted records, local silently swallows. Future: write to a
+      // local SQLite suggestion_outcomes table for fully-local analytics.
+      const record = (provider as any).recordSuggestionOutcome;
+      if (typeof record !== 'function') {
+        return {
+          ok: true,
+          recorded: false,
+          note: 'suggestion_outcome currently only persisted in hosted mode',
+        };
+      }
+      await record.call(provider, {
+        source_text: String(args.source_text ?? '').slice(0, 4000),
+        intent_kind: typeof args.intent_kind === 'string' ? args.intent_kind : null,
+        action: String(args.action ?? 'shown'),
+        surface: String(args.surface ?? 'mcp'),
+        acted_on_id: typeof args.acted_on_id === 'string' ? args.acted_on_id : null,
+      });
+      return { ok: true, recorded: true };
     }
 
     default:

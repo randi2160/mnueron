@@ -103,6 +103,6 @@ export abstract class JsonMcpDetector implements ToolDetector {
 
   private lastServerName: string | undefined;
   private serverNameInConfig(): string {
-    return this.lastServerName ?? 'engrama';
+    return this.lastServerName ?? 'mnueron';
   }
 }

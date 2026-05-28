@@ -10,6 +10,8 @@
  *                                          → configure for hosted mode
  *   mnueron setup --uninstall              → remove from all tools
  */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allDetectors } from './detectors/index.js';
@@ -22,6 +24,8 @@ const SERVER_NAME = "mnueron"; // or 'engrama' when rebranded
 export interface SetupOptions {
   only?: string[];           // restrict to these detector ids
   hosted?: { url: string; token: string };
+  namespace?: string;
+  persistHosted?: boolean;   // write ~/.mnueron/config.json so CLI uses cloud too
   yes?: boolean;             // skip prompts (we don't actually prompt yet — placeholder)
   uninstall?: boolean;
   dryRun?: boolean;
@@ -43,6 +47,10 @@ export async function runSetup(opts: SetupOptions = {}): Promise<SetupReport[]> 
 
   const entry = buildEntry(opts);
   const reports: SetupReport[] = [];
+
+  if (opts.hosted && opts.persistHosted !== false && !opts.dryRun) {
+    persistHostedConfig(opts.hosted.url, opts.hosted.token, opts.namespace);
+  }
 
   for (const d of detectors) {
     const status = d.status();
@@ -105,13 +113,35 @@ function buildEntry(opts: SetupOptions): McpServerEntry {
     command: 'node',
     args: [MNUERON_ENTRY],
   };
+  const env: Record<string, string> = {};
   if (opts.hosted) {
-    entry.env = {
-      MNUERON_API_URL: opts.hosted.url,
-      MNUERON_API_TOKEN: opts.hosted.token,
-    };
+    env.MNUERON_API_URL = opts.hosted.url;
+    env.MNUERON_API_TOKEN = opts.hosted.token;
   }
+  if (opts.namespace) env.MNUERON_NAMESPACE = opts.namespace;
+  if (Object.keys(env).length > 0) entry.env = env;
   return entry;
+}
+
+function persistHostedConfig(url: string, token: string, namespace?: string): void {
+  const dir = resolve(homedir(), '.mnueron');
+  const path = resolve(dir, 'config.json');
+  mkdirSync(dir, { recursive: true });
+
+  let existing: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      const raw = readFileSync(path, 'utf8');
+      existing = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      existing = {};
+    }
+  }
+
+  existing.apiUrl = url;
+  existing.apiToken = token;
+  if (namespace) existing.defaultNamespace = namespace;
+  writeFileSync(path, JSON.stringify(existing, null, 2));
 }
 
 /** Pretty-print the report for terminal output. */

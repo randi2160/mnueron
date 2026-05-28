@@ -66,6 +66,82 @@ Not detected:
 ✨ Done. Restart any running AI tool to load the memory plugin.
 ```
 
+For the published package, the same flow is:
+
+```bash
+npm install -g mnueron
+mnueron setup
+```
+
+Local mode is the default. No account, token, or cloud service is required, and
+your memories stay on your machine. Hosted/cloud mode is an explicit opt-in for
+users who want cross-machine sync or the hosted dashboard. When the user passes
+a hosted token, the setup wizard writes the hosted environment variables into
+each detected MCP config so Claude Desktop, Claude Code, Cursor, Windsurf, and
+Cline all talk to the same cloud memory store:
+
+```bash
+mnueron setup --hosted https://www.mnueron.com --token mnu_xxxxxxxxxxxx
+```
+
+Use `--namespace mnueron` or set `MNUERON_NAMESPACE=mnueron` when you want a
+general cross-project default namespace. Use project-specific namespaces such
+as `elevizio` only when you intentionally want that separation.
+
+### Manual MCP config fallback
+
+`mnueron setup` should be the normal path. Manual config is only needed when
+an IDE has not created its config folder yet, its MCP format changed, or you
+want to verify exactly what was written.
+
+Use this MCP server block, replacing the token with your own raw token:
+
+```json
+{
+  "mcpServers": {
+    "mnueron": {
+      "command": "node",
+      "args": [
+        "C:\\Mnueron\\Mnueron\\mnueron-v0.1.0\\mnueron\\dist\\index.js"
+      ],
+      "env": {
+        "MNUERON_API_URL": "https://www.mnueron.com",
+        "MNUERON_API_TOKEN": "mnu_xxxxxxxxxxxx",
+        "MNUERON_NAMESPACE": "mnueron"
+      }
+    }
+  }
+}
+```
+
+Common config locations:
+
+| Tool | Config file |
+| --- | --- |
+| Claude Desktop, Windows regular install | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Desktop, Windows Store install | `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json` |
+| Claude Desktop, macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Code | `~/.claude/settings.json` |
+| Codex | `~/.codex/config.toml` |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Cline (VS Code) | `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json` |
+| Continue.dev | `~/.continue/config.json` or `~/.continue/config.yaml` |
+
+For Claude Code, prefer the official CLI when available:
+
+```bash
+claude mcp add --scope user \
+  -e MNUERON_API_URL="https://www.mnueron.com" \
+  -e MNUERON_API_TOKEN="mnu_xxxxxxxxxxxx" \
+  -e MNUERON_NAMESPACE="mnueron" \
+  mnueron -- node /absolute/path/to/mnueron/dist/index.js
+```
+
+After any manual edit, fully restart the IDE. For Claude Code, exit the
+current session with `/exit` and start a fresh one so it reloads the MCP tool
+list.
+
 ### Step 3 — Verify it works
 
 Restart Claude Desktop (or any AI tool that was configured). In a new chat,

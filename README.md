@@ -378,10 +378,15 @@ cd server && npm install && npx tsx index.ts
 | --- | --- | --- |
 | Claude Desktop | ✓ | All platforms (macOS, Windows, Linux) |
 | Claude Code | ✓ | Uses `claude mcp add` CLI when available |
+| Codex | ✓ | `~/.codex/config.toml` |
 | Cursor | ✓ | `~/.cursor/mcp.json` |
 | Windsurf | ✓ | `~/.codeium/windsurf/mcp_config.json` |
 | Cline (VS Code) | ✓ | VS Code globalStorage |
 | Aider, OpenCode, Goose, Continue.dev, Zed | manual | All speak MCP |
+
+`mnueron setup` is the intended out-of-the-box path. If a tool changes its MCP
+config format or needs manual verification, see the exact config file paths and
+JSON block in [INSTALL.md](INSTALL.md#manual-mcp-config-fallback).
 
 ## Repo layout
 

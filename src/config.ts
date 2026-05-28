@@ -28,18 +28,20 @@ export function loadConfig(): MnueronConfig {
   const configPath = join(home, '.mnueron', 'config.json');
   let fileApiUrl: string | undefined;
   let fileApiToken: string | undefined;
+  let fileDefaultNamespace: string | undefined;
   if (existsSync(configPath)) {
     try {
       const j = JSON.parse(readFileSync(configPath, 'utf8'));
       if (typeof j.apiUrl === 'string')   fileApiUrl   = j.apiUrl;
       if (typeof j.apiToken === 'string') fileApiToken = j.apiToken;
+      if (typeof j.defaultNamespace === 'string') fileDefaultNamespace = j.defaultNamespace;
     } catch { /* malformed config.json — ignore */ }
   }
   const dbPath = process.env.MNUERON_DB_PATH ?? join(home, '.mnueron', 'memories.db');
   const apiUrl = process.env.MNUERON_API_URL ?? fileApiUrl;
   const apiToken = process.env.MNUERON_API_TOKEN ?? fileApiToken;
   const mode: 'local' | 'remote' = (apiUrl && apiToken) ? 'remote' : 'local';
-  const defaultNamespace = process.env.MNUERON_NAMESPACE ?? 'default';
+  const defaultNamespace = process.env.MNUERON_NAMESPACE ?? fileDefaultNamespace ?? 'default';
   return { mode, dbPath, apiUrl, apiToken, defaultNamespace };
 }
 

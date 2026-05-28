@@ -9,7 +9,8 @@
  */
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, makeProvider } from './config.js';
 import { importClaudeExport } from './import/claude.js';
@@ -21,6 +22,7 @@ import { cmdRunbookCapture } from './runbook/capture.js';
 import { cmdRunbookAutoExtract } from './runbook/auto-extract.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_HOSTED_URL = 'https://www.mnueron.com';
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -62,8 +64,11 @@ function printHelp() {
 
 Commands:
   mnueron setup                   Detect installed AI tools and configure each one
-       [--only <tool>]            Only configure one tool (claude-desktop|claude-code|cursor|windsurf|cline)
-       [--hosted <url> --token <t>]   Configure for hosted mode (default: local SQLite)
+       [--only <tool>]            Only configure one tool (claude-desktop|claude-code|codex|cursor|windsurf|cline)
+       [--local]                  Force local SQLite mode, even if hosted config exists
+       [--hosted <url> --token <t>]   Opt into hosted mode (default: local SQLite)
+       [--token <t>]              Shortcut for --hosted ${DEFAULT_HOSTED_URL} --token <t>
+       [--namespace <name>]       Default namespace written to MCP configs
        [--dry-run]                Show what would change without writing
        [--uninstall]              Remove mnueron from all detected tools
   mnueron import <file>           Bulk-import a Claude or OpenAI export
@@ -159,30 +164,23 @@ Environment:
 
 async function cmdSetup(args: string[]) {
   const opts: SetupOptions = {};
+  let hostedUrl: string | undefined;
+  let hostedToken: string | undefined;
+  let forceLocal = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--only' && args[i + 1]) {
       opts.only = (opts.only ?? []).concat(args[++i]);
-    } else if (a === '--hosted' && args[i + 1] && args[i + 2] && args[i + 2] !== '--token') {
-      // tolerate `--hosted URL --token TOKEN` and `--hosted URL --token TOKEN`
-      const url = args[++i];
-      const next = args[i + 1];
-      if (next === '--token' && args[i + 2]) {
-        i++;
-        opts.hosted = { url, token: args[++i] };
-      } else {
-        console.error('--hosted requires --token <value>');
-        process.exit(1);
-      }
-    } else if (a === '--hosted' && args[i + 1]) {
-      // alt parse: --hosted URL --token TOKEN
-      const url = args[++i];
-      const tokenIdx = args.indexOf('--token', i);
-      if (tokenIdx === -1 || !args[tokenIdx + 1]) {
-        console.error('--hosted requires --token <value>');
-        process.exit(1);
-      }
-      opts.hosted = { url, token: args[tokenIdx + 1] };
+    } else if ((a === '--hosted' || a === '--cloud') && args[i + 1] && !args[i + 1].startsWith('--')) {
+      hostedUrl = args[++i];
+    } else if (a === '--hosted' || a === '--cloud') {
+      hostedUrl = DEFAULT_HOSTED_URL;
+    } else if (a === '--token' && args[i + 1]) {
+      hostedToken = args[++i];
+    } else if ((a === '--namespace' || a === '--ns') && args[i + 1]) {
+      opts.namespace = args[++i];
+    } else if (a === '--local') {
+      forceLocal = true;
     } else if (a === '--dry-run') {
       opts.dryRun = true;
     } else if (a === '--uninstall') {
@@ -192,9 +190,29 @@ async function cmdSetup(args: string[]) {
     }
   }
 
+  const persisted = await readPersistedHostedConfig();
+  if (!forceLocal && !opts.uninstall) {
+    hostedUrl = hostedUrl ?? process.env.MNUERON_API_URL ?? persisted.apiUrl;
+    hostedToken = hostedToken ?? process.env.MNUERON_API_TOKEN ?? persisted.apiToken;
+    opts.namespace = opts.namespace ?? process.env.MNUERON_NAMESPACE ?? persisted.defaultNamespace;
+  }
+
+  if (hostedToken && !hostedUrl) hostedUrl = DEFAULT_HOSTED_URL;
+  if (hostedUrl && !hostedToken && !opts.uninstall) {
+    console.error('Hosted setup needs a token.');
+    console.error('Run: mnueron setup --token mnu_xxxxxxxxxxxx');
+    console.error(`Or:  mnueron setup --hosted ${hostedUrl} --token mnu_xxxxxxxxxxxx`);
+    process.exit(1);
+  }
+  if (hostedUrl && hostedToken && !forceLocal) {
+    opts.hosted = { url: hostedUrl, token: hostedToken };
+    opts.namespace = opts.namespace ?? 'mnueron';
+  }
+
   const banner =
     `\n  🧠  mnueron — persistent memory for AI dev tools\n` +
     `      mode: ${opts.hosted ? 'hosted (' + opts.hosted.url + ')' : 'local SQLite'}\n` +
+    (opts.namespace ? `      namespace: ${opts.namespace}\n` : '') +
     (opts.dryRun ? `      DRY RUN — no files will be changed\n` : '') +
     (opts.uninstall ? `      REMOVING — will unregister from detected tools\n` : '');
   console.log(banner);
@@ -205,10 +223,35 @@ async function cmdSetup(args: string[]) {
   const ok = reports.some(r => r.status === 'configured' || r.status === 'updated' || r.status === 'uninstalled');
   if (ok && !opts.dryRun && !opts.uninstall) {
     console.log(`\n✨ Done. Restart any running AI tool to load the memory plugin.`);
-    console.log(`   Then ask it: "What memory tools do you have?"\n`);
+    console.log(`   Then ask it: "What memory tools do you have?"`);
+    if (!opts.hosted) {
+      console.log(`\n   Using local SQLite. To use cloud memory instead, run:`);
+      console.log(`   mnueron setup --token mnu_xxxxxxxxxxxx`);
+    }
+    console.log('');
   } else if (!opts.dryRun && !opts.uninstall) {
     console.log(`\n  No supported AI tools detected on this machine.`);
     console.log(`  Install one of: Claude Desktop, Claude Code, Cursor, Windsurf, Cline\n`);
+  }
+}
+
+async function readPersistedHostedConfig(): Promise<{
+  apiUrl?: string;
+  apiToken?: string;
+  defaultNamespace?: string;
+}> {
+  const path = join(homedir(), '.mnueron', 'config.json');
+  if (!existsSync(path)) return {};
+  try {
+    const raw = await readFile(path, 'utf8');
+    const json = JSON.parse(raw);
+    return {
+      apiUrl: typeof json.apiUrl === 'string' ? json.apiUrl : undefined,
+      apiToken: typeof json.apiToken === 'string' ? json.apiToken : undefined,
+      defaultNamespace: typeof json.defaultNamespace === 'string' ? json.defaultNamespace : undefined,
+    };
+  } catch {
+    return {};
   }
 }
 

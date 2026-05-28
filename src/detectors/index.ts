@@ -9,6 +9,7 @@ import { ZedDetector } from './zed.js';
 import { AiderDetector } from './aider.js';
 import { GooseDetector } from './goose.js';
 import { OpenCodeDetector } from './opencode.js';
+import { CodexDetector } from './codex.js';
 
 /**
  * Order matters for the setup wizard output. The first five (Claude-family +
@@ -19,6 +20,7 @@ export function allDetectors(): ToolDetector[] {
   return [
     new ClaudeDesktopDetector(),
     new ClaudeCodeDetector(),
+    new CodexDetector(),
     new CursorDetector(),
     new WindsurfDetector(),
     new ClineDetector(),

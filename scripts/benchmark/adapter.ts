@@ -52,6 +52,19 @@ export interface BenchHit {
   window_index?: number;
   window_start_dia?: string;
   window_end_dia?: string;
+  /**
+   * Tier 3 — date anchors extracted at ingestion from the memory's
+   * content. Used by Tier 4 re-rank: if the question's time anchor is
+   * "last March" and a memory contains "March 2024", they're close in
+   * proximity even when the memory's `timestamp` (when it was spoken)
+   * is far from "last March".
+   */
+  temporal_anchors?: Array<{
+    phrase: string;
+    resolved_ms: number;
+    kind: string;
+    confidence: number;
+  }>;
 }
 
 export interface AdapterOptions {
@@ -75,9 +88,15 @@ interface ProviderLike {
 }
 
 // Query intent: temporal markers — when, how long, before/after, ago, dates.
+// Kept as a fast-path regex for compatibility; richer classification lives
+// in src/lib/temporal-intent.ts (Tier 2+ uses that one).
 const TEMPORAL_RE = /\b(when|how\s+long|how\s+many\s+(?:days|weeks|months|years)|before|after|ago|prior|earliest|latest|first\s+time|last\s+time|recent|date|month|week|year|day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
 const NEIGHBOR_RADIUS = 2;
 const RETRIEVAL_TOKEN_BUDGET = 7000;
+
+// Tier 2/4 temporal helpers.
+import { extractDateAnchors } from '../../src/lib/date-anchors.js';
+import { classifyTemporal, temporalProximityScore } from '../../src/lib/temporal-intent.js';
 
 // Cached cross-encoder reranker — loaded lazily on first search.
 //
@@ -151,8 +170,15 @@ export class MnueronAdapter {
 
     if (this.ingestionMode === 'turns' || this.ingestionMode === 'both') {
       for (const m of messages) {
+        // Tier 3 — extract date anchors from the turn's text, anchored
+        // against the message's timestamp (so "last March" resolves
+        // relative to when the message was actually spoken, not now).
+        const turnContent = `${m.speaker}: ${m.text}`;
+        const turnAnchor = m.timestamp ? new Date(m.timestamp) : undefined;
+        const turnDateAnchors = extractDateAnchors(m.text, turnAnchor);
+
         await provider.save({
-          content: `${m.speaker}: ${m.text}`,
+          content: turnContent,
           namespace: ns,
           source: 'benchmark-turn',
           source_ref: m.dia_id,
@@ -162,6 +188,8 @@ export class MnueronAdapter {
             session_idx: m.session_idx ?? null,
             dia_id: m.dia_id ?? null,
             kind: 'turn',
+            // Tier 3 — temporal anchors extracted from the turn content.
+            temporal_anchors: turnDateAnchors.length > 0 ? turnDateAnchors : undefined,
           },
         });
         saved++;
@@ -175,6 +203,14 @@ export class MnueronAdapter {
         const content = window.map(m => `${m.speaker}: ${m.text}`).join('\n');
         const first = window[0];
         const last = window[window.length - 1];
+
+        // Tier 3 — extract date anchors across the full window text.
+        // Anchor against the first turn's timestamp so "two weeks ago"
+        // inside the window resolves relative to when the conversation
+        // happened.
+        const windowAnchor = first.timestamp ? new Date(first.timestamp) : undefined;
+        const windowDateAnchors = extractDateAnchors(content, windowAnchor);
+
         const savedRow = await provider.save({
           content,
           namespace: ns,
@@ -188,6 +224,8 @@ export class MnueronAdapter {
             window_end_dia: last.dia_id ?? null,
             turn_count: window.length,
             kind: 'window',
+            // Tier 3 — temporal anchors extracted from the window content.
+            temporal_anchors: windowDateAnchors.length > 0 ? windowDateAnchors : undefined,
           },
         });
         this.rememberWindow(userId, {
@@ -210,8 +248,19 @@ export class MnueronAdapter {
 
   async search(query: string, userId: string, k = 10): Promise<BenchHit[]> {
     const provider = await this.provider();
-    // Oversample 2x when reranking — gives the cross-encoder real signal to work with.
-    const fetchK = this.rerankEnabled ? Math.min(k * 2, 80) : k;
+
+    // Tier 2 — temporal-intent oversample.
+    //
+    // The default oversample for rerank is k*2. For temporal queries we
+    // bump it higher because the right memory is often outside the
+    // BM25/vector top-k (the question asks "when did X happen" but X is
+    // a common word; the time-anchored memory ranks lower than memories
+    // that match the query semantically but lack the date). Pulling a
+    // wider candidate set gives the Tier 4 re-rank more to work with.
+    const intent = classifyTemporal(query);
+    const baseFetch = this.rerankEnabled ? k * 2 : k;
+    const fetchK = intent.isTemporal ? Math.min(k * 4, 120) : Math.min(baseFetch, 80);
+
     const raw = await provider.search({ query, namespace: this.ns(userId), k: fetchK });
     let hits: BenchHit[] = raw.map((h: any) => ({
       id: h.id,
@@ -225,6 +274,10 @@ export class MnueronAdapter {
       window_index: h.metadata?.window_index ?? undefined,
       window_start_dia: h.metadata?.window_start_dia ?? undefined,
       window_end_dia: h.metadata?.window_end_dia ?? undefined,
+      // Pass through extracted temporal anchors for Tier 4 re-rank.
+      temporal_anchors: h.metadata?.temporal_anchors as
+        | Array<{ phrase: string; resolved_ms: number; kind: string; confidence: number }>
+        | undefined,
     }));
 
     // Speaker boost — if the query names a known speaker, prefer memories containing them.
@@ -257,8 +310,50 @@ export class MnueronAdapter {
 
     hits = this.expandWindowNeighbors(userId, hits);
 
-    // Temporal-intent chronological re-sort — easier date math for the LLM downstream.
-    if (this.temporalSortEnabled && TEMPORAL_RE.test(query)) {
+    // Tier 4 — temporal proximity re-rank.
+    //
+    // For temporal queries with an identifiable time anchor in the
+    // question, blend the existing relevance score with a
+    // proximity-to-anchor score. The "anchor" is the time the question
+    // is asking ABOUT — e.g. "last March" in "what did Sarah say last
+    // March about Stripe". Memories close to that anchor (by either
+    // their own `timestamp` OR by an extracted in-content anchor) get a
+    // boost.
+    //
+    // We pick the BEST proximity available per memory: the closer of
+    // (a) memory.timestamp vs query anchor, (b) any extracted
+    // temporal_anchor in the memory's content vs query anchor.
+    if (this.temporalSortEnabled && intent.isTemporal) {
+      const queryAnchor = intent.anchor;
+      if (queryAnchor) {
+        // Blend mode: weight existing score 0.65, proximity 0.35.
+        // Picked empirically — higher proximity weight pushed too many
+        // tangential time-matching memories above semantically relevant ones.
+        const PROX_WEIGHT = 0.35;
+        const REL_WEIGHT = 0.65;
+        hits = hits
+          .map(h => {
+            const memTs = h.timestamp ? Date.parse(h.timestamp) : null;
+            const memAnchorProx = h.temporal_anchors?.length
+              ? Math.max(
+                  ...h.temporal_anchors.map(a =>
+                    temporalProximityScore(a.resolved_ms, queryAnchor),
+                  ),
+                )
+              : 0;
+            const memTsProx = temporalProximityScore(memTs, queryAnchor);
+            const prox = Math.max(memTsProx, memAnchorProx);
+            // Score blending. h.score is RRF-fused and rerank-adjusted —
+            // already normalized roughly to [0..1]; prox is also [0..1].
+            return { ...h, score: REL_WEIGHT * h.score + PROX_WEIGHT * prox };
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, Math.max(k, 30));
+      }
+
+      // Tier 1 — chronological re-sort for the LLM downstream.
+      // Always applied for temporal queries (the model gets cleaner date
+      // math when the context is in chronological order).
       hits = hits.slice().sort((a, b) => {
         const ta = a.timestamp ? Date.parse(a.timestamp) : 0;
         const tb = b.timestamp ? Date.parse(b.timestamp) : 0;

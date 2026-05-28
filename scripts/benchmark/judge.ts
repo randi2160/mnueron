@@ -21,6 +21,36 @@ export interface JudgeResult {
   llmAnswer: string;
 }
 
+/**
+ * Client-side throttle.
+ *
+ * OpenAI's default tier limits gpt-4o at 500 RPM (~8.3 calls/sec).
+ * The benchmark fires ~4000 calls back-to-back across 10 samples; without
+ * throttling, that bursts past the per-minute window and triggers
+ * cascading 429s that even 5x exponential backoff can't drain.
+ *
+ * The fix: insert a minimum gap between calls (default 150ms = max
+ * 400 RPM, safely under Tier 1's 500 RPM cap). For higher tiers,
+ * override via MNUERON_BENCH_MIN_CALL_GAP_MS. For Tier 5+ accounts you
+ * can drop it to 50ms.
+ *
+ * Module-level state so the throttle works across ALL chat() callers
+ * in this process — both `generateAnswer` and `judgeAnswer` share the
+ * same rate-limit budget at the OpenAI side, so they share the same
+ * throttle here.
+ */
+const MIN_CALL_GAP_MS = Number(process.env.MNUERON_BENCH_MIN_CALL_GAP_MS ?? 150);
+let lastCallAt = 0;
+
+async function throttle(): Promise<void> {
+  const now = Date.now();
+  const wait = lastCallAt + MIN_CALL_GAP_MS - now;
+  if (wait > 0) {
+    await new Promise(res => setTimeout(res, wait));
+  }
+  lastCallAt = Date.now();
+}
+
 async function chat(model: string, messages: any[], maxTokens = 300): Promise<string> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return '[no OPENAI_API_KEY — synthetic answer]';
@@ -28,7 +58,9 @@ async function chat(model: string, messages: any[], maxTokens = 300): Promise<st
   const headers = { 'authorization': `Bearer ${key}`, 'content-type': 'application/json' };
   let lastErr: unknown;
   // Retry on network errors, 429s, and 5xx. Bail immediately on 4xx (bad key, malformed request).
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    // Throttle BEFORE each attempt so retries also respect the cap.
+    await throttle();
     try {
       const r = await fetch(OPENAI_URL, { method: 'POST', headers, body });
       if (r.ok) {
@@ -39,17 +71,44 @@ async function chat(model: string, messages: any[], maxTokens = 300): Promise<st
         const errBody = await r.text().catch(() => '');
         throw new Error(`OpenAI ${r.status}: ${errBody.slice(0, 400)}`);
       }
-      lastErr = new Error(`OpenAI ${r.status} (attempt ${attempt}/5)`);
+      // 429: honor the Retry-After header if present (in seconds OR as
+      // an HTTP-date). OpenAI's gateway sets this on rate-limit blocks
+      // and it tells us EXACTLY how long the bucket needs to refill.
+      // Without honoring it, we burn through retries before the window
+      // resets and bail unnecessarily.
+      if (r.status === 429) {
+        const retryAfter = r.headers.get('retry-after');
+        let suggestedDelayMs = 0;
+        if (retryAfter) {
+          const asNum = Number(retryAfter);
+          if (Number.isFinite(asNum)) {
+            suggestedDelayMs = asNum * 1000;
+          } else {
+            const asDate = Date.parse(retryAfter);
+            if (!Number.isNaN(asDate)) suggestedDelayMs = Math.max(0, asDate - Date.now());
+          }
+        }
+        if (suggestedDelayMs > 0) {
+          const cappedDelayMs = Math.min(suggestedDelayMs, 60_000);
+          console.warn(`  [judge] OpenAI 429 — Retry-After=${retryAfter} — waiting ${cappedDelayMs}ms`);
+          await new Promise(res => setTimeout(res, cappedDelayMs));
+          lastErr = new Error(`OpenAI 429 (attempt ${attempt}/6, honored Retry-After)`);
+          continue;
+        }
+      }
+      lastErr = new Error(`OpenAI ${r.status} (attempt ${attempt}/6)`);
     } catch (e: any) {
       // Non-retryable 4xx thrown above re-throws here; only swallow transient network errors.
       if (e?.message?.startsWith('OpenAI ') && !e.message.includes('attempt')) throw e;
       lastErr = e;
     }
-    const delayMs = Math.min(1000 * 2 ** (attempt - 1), 16000);
+    // Exponential backoff for non-Retry-After cases (network errors, 5xx).
+    // Slightly more headroom: capped at 32s instead of 16s.
+    const delayMs = Math.min(1000 * 2 ** (attempt - 1), 32_000);
     console.warn(`  [judge] ${lastErr instanceof Error ? lastErr.message : lastErr} — waiting ${delayMs}ms then retrying`);
     await new Promise(res => setTimeout(res, delayMs));
   }
-  throw new Error(`OpenAI chat failed after 5 attempts: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
+  throw new Error(`OpenAI chat failed after 6 attempts: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
 }
 
 export async function generateAnswer(
@@ -71,55 +130,53 @@ export async function generateAnswer(
     {
       role: 'system',
       content:
-        'You answer questions about a conversation using the retrieved memories below as your primary source. ' +
+        'You answer questions about a conversation using the retrieved memories below. ' +
         'The memories are dialog turns (or short windows of consecutive turns) prefixed with [N] and an optional (timestamp). ' +
         'For temporal questions the memories are pre-sorted in chronological order (oldest first). ' +
         '\n\n' +
-        'ABOUT THIS BENCHMARK: many questions are ADVERSARIAL. They are designed to look ' +
-        'answerable from circumstantial or near-miss memories that mention related people, places, ' +
-        'topics, or time periods but do NOT actually contain the specific fact asked about. ' +
-        'The benchmark rewards "NO_ANSWER" when no answer exists in the memories and penalizes ' +
-        'confident-but-wrong guesses equally with wrong answers. Refuse when in doubt. ' +
+        'YOUR DEFAULT IS TO ANSWER. The memories contain a real answer in most cases. Find it, paraphrase to be concise, deliver it. ' +
+        'Paraphrased questions are fine — if memories say "I love hiking" and the question is "what hobby does X enjoy?", answer "hiking" confidently. ' +
         '\n\n' +
-        'BEFORE answering, run this 3-step verification: ' +
-        '(1) Is the specific entity (person, place, thing, event) from the question present in the memories? ' +
-        '(2) Is the specific attribute being asked about (color, number, date, name, preference, action, location) EXPLICITLY stated about that entity in the memories? ' +
-        '(3) Would you have to guess between multiple plausible values, or fill in a value the memories don\'t actually contain? ' +
+        'ANSWER CONFIDENTLY WHEN: ' +
+        '- A memory directly states the fact (single-hop — most common case). ' +
+        '- Multiple memories together provide the answer through composition (multi-hop). ' +
+        '- A general trait clearly implies the answer (commonsense: memories say "Sarah is vegan" → "she would dislike a steakhouse"). ' +
+        '- A memory mentions a date or relative time ("last March I changed jobs", "two weeks ago"), use it for temporal questions even without a (timestamp) prefix. ' +
+        '- A (timestamp) on a memory provides the temporal answer directly. ' +
         '\n\n' +
-        'If (1) or (2) is no, OR (3) is yes → reply exactly: NO_ANSWER ' +
-        '\nOtherwise → answer concisely. ' +
+        'REPLY "NO_ANSWER" ONLY WHEN: ' +
+        '1. The memories don\'t mention the topic at all. ' +
+        '2. The memories discuss a RELATED topic but never the specific fact asked. ' +
+        '   Example: memories describe Sarah visiting several restaurants but never which one she RECOMMENDED → refuse. ' +
+        '   Example: memories describe John\'s preferences for hiking gear but the question asks about his car → refuse. ' +
+        '3. You would have to invent a value the memories never contain (specific number, name, place). ' +
+        '4. The question hinges on a distinction the memories don\'t make (e.g. asks about "Sarah\'s sister" but memories only mention "Sarah\'s family member" generically). ' +
         '\n\n' +
-        'WHAT COUNTS AS "EXPLICITLY STATED": ' +
-        '- A direct quote or paraphrase of the speaker saying the exact fact ("I love hiking" → yes, you can answer "what does X love"). ' +
-        '- A clear factual statement about the entity ("Sarah is a vegan" → yes, you can answer "is Sarah vegetarian"). ' +
-        '- A timestamp on a memory ("(2024-03-15) ...") → yes, you can answer "when did X happen" if X is the subject of that memory. ' +
-        '\nNOT EXPLICITLY STATED: ' +
-        '- The speaker mentions a related topic but never states the specific fact. ' +
-        '- The memories show the speaker doing similar things in similar places but never the exact one asked. ' +
-        '- You\'d need to assume the speaker\'s preference, motivation, or future action from partial evidence. ' +
-        '\n\n' +
-        'MULTI-HOP QUESTIONS — combining facts is ALLOWED only when each piece is explicitly stated: ' +
-        '"Where does Sarah work + what did her boss say" → fine if both are in the memories. ' +
-        '"What restaurant did Sarah recommend to her vegan friend" → only fine if the memories actually state Sarah recommended a restaurant to a vegan friend; not fine if you have to infer "Sarah is vegan + her friend ate at X → Sarah recommended X". ' +
-        '\n\n' +
-        'COMMONSENSE QUESTIONS — clear implication is OK: ' +
-        'If memories establish "Sarah is a vegan" and the question asks "would Sarah enjoy a steakhouse", that is a clear implication and you should answer "no". ' +
-        'But if the memories say "Sarah went out to dinner Friday" and the question asks "did Sarah enjoy her dinner", refuse — the memories don\'t state her enjoyment. ' +
+        'ADVERSARIAL-PATTERN DETECTION (apply LAST, only when you\'re about to answer): ' +
+        'Pause and ask: "Is the specific fact asked about LITERALLY in the memories, or would I be filling in a plausible-but-unsupported value?" ' +
+        'If filling in unsupported value → switch to NO_ANSWER. ' +
+        'But this is NOT permission to refuse direct facts on stylistic grounds. "I love hiking" answers "what hobby does X like" — that\'s direct, answer it. ' +
         '\n\n' +
         'TEMPORAL QUESTIONS (when, how long ago, before/after, what date, how many days/weeks/months): ' +
         'Use the CURRENT DATE given below as "now" if provided; otherwise treat the most recent timestamp in the set as "now". ' +
-        'For "how long ago did X happen", compute the difference between X\'s timestamp and "now" in the unit asked (days, weeks, months). ' +
-        'For "when did X happen", give the actual date from X\'s timestamp, not a relative phrase. ' +
-        'For "before/after Y", compare timestamps directly and state the order. ' +
-        'Always show the timestamps you used in parentheses at the end. ' +
-        'If the question asks about a date/duration the memories do not have timestamped evidence for, reply NO_ANSWER — do not guess. ' +
+        'Use both (timestamp) prefixes AND in-memory date phrases ("Last March", "two weeks ago", "yesterday"). ' +
+        'For "how long ago did X happen", compute the difference between X\'s time-anchor and "now" in the unit asked. ' +
+        'For "when did X happen", give the actual date if you can compute it; a relative phrase ("about a month ago") is acceptable if only relative time is given. ' +
+        'For "before/after Y", compare time-anchors and state the order. ' +
+        'Show timestamps or date phrases in parentheses at the end when you used them. ' +
+        'Reply NO_ANSWER only if neither timestamp metadata NOR in-content date phrases can resolve the question. ' +
         '\n\n' +
         'MULTI-PART QUESTIONS (asking for multiple items, names, or a list): ' +
-        'Enumerate ALL relevant items found across the retrieved memories. Do not stop at the first match. ' +
+        'Enumerate every relevant item found across the retrieved memories. Do not stop at the first match. ' +
         'If the gold likely contains a count + a list (e.g. "3 things: A, B, C"), include both the count and the items. ' +
         'If only SOME of the requested items are in the memories, list those and don\'t fabricate the rest. ' +
         '\n\n' +
-        'Be concise — one short sentence when possible. Do not pad with caveats or hedges like "based on the memories". ' +
+        'MULTI-HOP COMBINATION (e.g. "What did Sarah\'s boss say about her vacation request?"): ' +
+        'Combine facts across memories when each piece is supported. ' +
+        'Do not refuse just because the answer requires combining 2-3 memories — that\'s the point of multi-hop. ' +
+        'Only refuse multi-hop if one or more of the required pieces is missing from the memories. ' +
+        '\n\n' +
+        'Be concise — one short sentence when possible. Don\'t pad with caveats or hedges like "based on the memories". ' +
         'When refusing, reply EXACTLY "NO_ANSWER" — no other text, no explanation.' +
         nowAnchor,
     },

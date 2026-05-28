@@ -1,8 +1,8 @@
 {
   "name": "mnueron-vscode",
-  "displayName": "mnueron \u2014 AI memory",
-  "description": "Save, search, and inject memories from mnueron \u2014 works alongside Copilot, Cursor, and Cline.",
-  "version": "0.1.5",
+  "displayName": "mnueron — AI memory",
+  "description": "Save, search, and inject memories from mnueron — works alongside Copilot, Cursor, and Cline.",
+  "version": "0.1.8",
   "publisher": "mnueron",
   "engines": {
     "vscode": "^1.85.0"
@@ -34,7 +34,7 @@
       },
       {
         "command": "mnueron.recall",
-        "title": "mnueron: Recall memory\u2026",
+        "title": "mnueron: Recall memory…",
         "icon": "$(search)"
       },
       {
@@ -134,7 +134,7 @@
         "mnueron.apiToken": {
           "type": "string",
           "default": "",
-          "description": "Bearer token (mnu_\u2026) for hosted mode. Issue one at /account-settings/tokens. Leave blank for local mode."
+          "description": "Bearer token (mnu_…) for hosted mode. Issue one at /account-settings/tokens. Leave blank for local mode."
         },
         "mnueron.activeNamespace": {
           "type": "string",

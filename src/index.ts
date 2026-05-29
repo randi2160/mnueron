@@ -25,12 +25,23 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig, makeProvider } from './config.js';
+import { RecallLogger, detectMcpClient } from './savings/recall-logger.js';
 import { TOOL_DEFINITIONS, handleToolCall } from './tools.js';
 import { loadPlugins, deactivatePlugins } from './plugins/loader.js';
 
 async function main() {
   const cfg = loadConfig();
   const provider = makeProvider(cfg);
+
+  // Provider-agnostic recall logger — writes to local SQLite at cfg.dbPath
+  // regardless of whether `provider` is LocalProvider or RemoteProvider.
+  // This is what lets the dashboard at port 3122 see recall events even
+  // when memories themselves live in a hosted backend.
+  const recallLogger = new RecallLogger({
+    dbPath: cfg.dbPath,
+    client: detectMcpClient(),
+    defaultModelId: process.env.MNUERON_DEFAULT_MODEL ?? 'gpt-4o',
+  });
 
   // Important: log to stderr only. stdout is the JSON-RPC channel; anything
   // we write to stdout that isn't a proper JSON-RPC message corrupts the
@@ -64,13 +75,42 @@ async function main() {
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
+      const args = (req.params.arguments ?? {}) as Record<string, unknown>;
       const result = await handleToolCall(
         provider,
         cfg.defaultNamespace,
         req.params.name,
-        (req.params.arguments ?? {}) as Record<string, unknown>,
+        args,
         pluginRegistry,
       );
+
+      // Provider-agnostic recall capture. Fires for memory_recall AND
+      // memory_recall_multi (bulk searches) so the dashboard reflects every
+      // search the agent runs. Other tools (save, get, list, etc.) are not
+      // captured — recall_events is for searches, not all memory access.
+      if (req.params.name === 'memory_recall' || req.params.name === 'memory_recall_multi') {
+        try {
+          const query = typeof args.query === 'string' ? args.query : '';
+          const namespace = typeof args.namespace === 'string' ? args.namespace : cfg.defaultNamespace;
+          const model_id = typeof args.model_id === 'string' ? args.model_id : null;
+
+          // handleToolCall's recall return shape: either an array of memories
+          // or { results: Memory[], procedurals?: [...] } when runbooks
+          // auto-surface. Normalize either way.
+          const memories =
+            Array.isArray(result) ? result :
+            Array.isArray((result as { results?: unknown })?.results) ? (result as { results: unknown[] }).results :
+            [];
+          recallLogger.logRecall(
+            { query, namespace, model_id },
+            memories as Array<{ content?: string | null }>,
+          );
+        } catch (capErr) {
+          // Never fail the MCP tool call because logging stumbled.
+          process.stderr.write(`[mnueron/recall-logger] capture failed: ${capErr instanceof Error ? capErr.message : capErr}\n`);
+        }
+      }
+
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
@@ -87,6 +127,7 @@ async function main() {
 
   const shutdown = async () => {
     await deactivatePlugins(pluginRegistry).catch(() => {});
+    recallLogger.close();
     await provider.close().catch(() => {});
     process.exit(0);
   };

@@ -539,6 +539,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, status: await ping() });
       } else if (msg.type === 'mnueron:get_settings') {
         sendResponse({ ok: true, settings: await getSettings() });
+      } else if (msg.type === 'mnueron:open_options') {
+        // Asked by the suggestions overlay onboarding card. Content scripts
+        // can't open the options page directly under MV3 — they have to
+        // bounce through the service worker.
+        try { chrome.runtime.openOptionsPage(); } catch (e) {
+          sendResponse({ ok: false, error: e?.message ?? String(e) });
+          return;
+        }
+        sendResponse({ ok: true });
+      } else if (msg.type === 'mnueron:recall_assist') {
+        // The suggestions overlay (content script on claude.ai / chatgpt.com /
+        // gemini.google.com) bounces its /api/recall/assist call through here
+        // because MV3 content-script fetches use the page's origin and are
+        // CORS-policed. Fetches from the service worker use the extension's
+        // own origin (host_permissions-scoped), so they bypass CORS AND skip
+        // the OPTIONS preflight that would otherwise hit the bare-domain to
+        // www redirect.
+        try {
+          const result = await apiFetch('/api/recall/assist', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: msg.text || '',
+              surface: msg.surface || 'chrome',
+            }),
+          });
+          sendResponse({ ok: true, result });
+        } catch (e) {
+          sendResponse({ ok: false, error: e?.message ?? String(e) });
+        }
+      } else if (msg.type === 'mnueron:suggestion_outcome') {
+        // Same bounce pattern for outcome-logging. Best-effort: we ack ok
+        // even when the POST fails so the overlay's click flow keeps moving.
+        try {
+          await apiFetch('/api/recall/suggestion-outcome', {
+            method: 'POST',
+            body: JSON.stringify({
+              outcome_id: msg.outcome_id,
+              action: msg.action,
+              acted_on_id: msg.acted_on_id,
+            }),
+          });
+        } catch (e) {
+          console.warn('[mnueron] suggestion_outcome failed:', e?.message ?? e);
+        }
+        sendResponse({ ok: true });
       } else if (msg.type === 'mnueron:set_settings') {
         await setSettings(msg.patch || {});
         sendResponse({ ok: true });

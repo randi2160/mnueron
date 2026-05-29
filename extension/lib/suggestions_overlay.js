@@ -1,85 +1,129 @@
 /**
  * mnueron Chrome extension — live suggestions overlay
  *
- * Phase 4 starter scaffold. When the user types in a textarea or
- * contenteditable on a supported site (claude.ai, chatgpt.com), this
- * script:
- *   1. Watches the focused field for typing pauses (1.5s debounce)
- *   2. When the text accumulates > 30 chars, POSTs to mnueron.com/api/recall/assist
- *   3. Renders a floating card next to the textarea with up to 3 suggestions
- *   4. On click: "Add to prompt" inserts at cursor, "Open" opens the
- *      memory in a new tab on mnueron.com, "Dismiss" hides the card
+ * Watches the focused textarea/contenteditable on claude.ai, chatgpt.com,
+ * and gemini.google.com. After a 1.5s typing pause with 30+ chars, asks
+ * background.js to call /api/recall/assist (bounced through the service
+ * worker so the fetch uses the extension's origin and bypasses CORS).
+ * Renders a floating card with up to 3 suggestion matches.
  *
- * Status: SCAFFOLD. Working pipeline + UI. Needs: per-site adapters,
- * settings UI for enabling/disabling, multi-language support, accept
- * actions that work in claude.ai vs chatgpt.com vs gemini etc.
- *
- * Wired up by adding to manifest.json content_scripts after the
- * existing capture scripts:
- *   "matches": ["https://claude.ai/*", "https://chatgpt.com/*"],
- *   "js": ["lib/suggestions_overlay.js"]
+ * Diagnostic logging on by default — prefix `[mnueron/suggest]`. Set
+ * MNUERON_OVERLAY_QUIET = true to silence once it's confirmed wired.
  */
 (function () {
   "use strict";
 
-  const HOSTED_BASE = "https://mnueron.com";
+  const DEFAULT_HOSTED_BASE = "https://mnueron.com";
   const DEBOUNCE_MS = 1500;
   const MIN_TEXT_LEN = 30;
   const CARD_ID = "mnueron-suggestions-card";
+  const SEND_TIMEOUT_MS = 10000;  // Stuck-spinner safety net
+
+  // Toggleable via window.MNUERON_OVERLAY_QUIET = true in DevTools console
+  const log = (...args) => {
+    if (!window.MNUERON_OVERLAY_QUIET) console.log("[mnueron/suggest]", ...args);
+  };
+
+  log("overlay loaded on", location.host);
 
   let debounceTimer = null;
   let lastQuery = "";
   let currentOutcomeId = null;
 
-  // ─── Watch focused inputs for typing ─────────────────────────────────
+  async function getHostedConfig() {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "mnueron:get_settings" });
+      const s = res?.settings || {};
+      if (!s.prefer_hosted) return null;
+      if (!s.hosted_token) return null;
+      return {
+        baseUrl: (s.hosted_url || DEFAULT_HOSTED_BASE).replace(/\/$/, ""),
+        token: s.hosted_token,
+      };
+    } catch (e) {
+      log("getHostedConfig failed:", e?.message);
+      return null;
+    }
+  }
+
+  /**
+   * Timeout-wrapped sendMessage. Prevents the spinner from hanging forever
+   * when the MV3 service worker is killed mid-fetch.
+   */
+  function sendMessageWithTimeout(payload, ms = SEND_TIMEOUT_MS) {
+    return Promise.race([
+      chrome.runtime.sendMessage(payload),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`timeout after ${ms}ms — background.js didn't respond`)), ms),
+      ),
+    ]);
+  }
+
   document.addEventListener(
     "input",
     (e) => {
       const t = e.target;
-      if (!isInputLike(t)) return;
+      const inputLike = isInputLike(t);
+      if (!inputLike) {
+        // Sample log so we can see what claude.ai/chatgpt.com fire input
+        // events from. Throttled via lastQuery to avoid log spam.
+        if (lastQuery !== "__not_input_like__") {
+          log("input event ignored — not input-like:", t?.tagName, "ce:", t?.isContentEditable);
+          lastQuery = "__not_input_like__";
+        }
+        return;
+      }
       const text = getInputText(t);
       if (text.length < MIN_TEXT_LEN || text === lastQuery) return;
+      log("input from", t.tagName, "len:", text.length, "— debouncing");
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => triggerAssist(t, text), DEBOUNCE_MS);
     },
     true,
   );
 
-  // ─── Trigger assist + render card ────────────────────────────────────
   async function triggerAssist(target, text) {
     lastQuery = text;
-    showCard(target, { state: "loading" });
-
-    try {
-      const { apiToken } = await chrome.storage.local.get("apiToken");
-      if (!apiToken) {
+    log("triggerAssist firing, text.length:", text.length);
+    const cfg = await getHostedConfig();
+    if (!cfg) {
+      const res = await chrome.runtime.sendMessage({ type: "mnueron:get_settings" }).catch(() => null);
+      const s = res?.settings || {};
+      if (s.prefer_hosted && !s.hosted_token) {
+        log("showing onboarding card");
         showCard(target, {
-          state: "error",
-          message:
-            "Add your mnueron API token in the extension options to enable live suggestions.",
+          state: "onboarding",
+          hostedUrl: (s.hosted_url || DEFAULT_HOSTED_BASE).replace(/\/$/, ""),
         });
-        return;
+      } else {
+        log("no config (prefer_hosted:", s.prefer_hosted, "token set:", !!s.hosted_token, ") — silent");
       }
-      const r = await fetch(`${HOSTED_BASE}/api/recall/assist`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiToken}`,
-        },
-        body: JSON.stringify({
-          text,
-          surface: "chrome",
-        }),
+      return;
+    }
+
+    showCard(target, { state: "loading" });
+    try {
+      log("requesting recall_assist via background.js");
+      const resp = await sendMessageWithTimeout({
+        type: "mnueron:recall_assist",
+        text,
+        surface: "chrome",
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
+      log("recall_assist resp:", resp);
+      if (!resp?.ok) {
+        throw new Error(resp?.error || "recall_assist failed");
+      }
+      const j = resp.result;
       currentOutcomeId = j.outcome_id;
       if (!j.suggestions || j.suggestions.length === 0) {
+        log("no suggestions returned — hiding card");
         hideCard();
         return;
       }
+      log("rendering", j.suggestions.length, "suggestions");
       showCard(target, { state: "suggestions", result: j });
     } catch (e) {
+      log("recall_assist failed:", e?.message);
       showCard(target, {
         state: "error",
         message: e.message ?? "Couldn't load suggestions.",
@@ -87,7 +131,6 @@
     }
   }
 
-  // ─── Card UI ─────────────────────────────────────────────────────────
   function showCard(target, payload) {
     let card = document.getElementById(CARD_ID);
     if (!card) {
@@ -101,8 +144,7 @@
         boxShadow: "0 6px 24px rgba(15,23,42,0.12)",
         borderRadius: "12px",
         padding: "12px",
-        fontFamily:
-          "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+        fontFamily: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
         fontSize: "13px",
         color: "#1e293b",
         width: "360px",
@@ -132,7 +174,40 @@
     if (payload.state === "error") {
       return `<div style="color:#dc2626;font-size:12px;">⚠ ${escapeHtml(payload.message)}</div>`;
     }
-    const { intent, suggestions, entities } = payload.result;
+    if (payload.state === "onboarding") {
+      const host = payload.hostedUrl || DEFAULT_HOSTED_BASE;
+      const tokenUrl = `${host}/account-settings/tokens`;
+      const hostLabel = host.replace(/^https?:\/\//, "");
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <strong style="font-size:13px;color:#1e293b;">📚 mnueron — one-time setup</strong>
+          <button id="mnueron-close" style="background:none;border:0;cursor:pointer;color:#94a3b8;font-size:16px;line-height:1;">×</button>
+        </div>
+        <p style="font-size:12px;line-height:1.5;color:#475569;margin:0 0 10px 0;">
+          To show suggestions while you type, mnueron needs a hosted bearer token. It takes about a minute.
+        </p>
+        <ol style="padding-left:18px;margin:0 0 12px 0;font-size:12px;line-height:1.55;color:#334155;">
+          <li style="margin-bottom:8px;">
+            <strong>Get your token.</strong>
+            Open <a href="${escapeHtml(tokenUrl)}" target="_blank" style="color:#7c3aed;text-decoration:none;border-bottom:1px solid #c4b5fd;">${escapeHtml(hostLabel)}/account-settings/tokens</a>
+            → "New token". Copy the value (starts with <code style="background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:11px;">mnu_</code>). You only see it once.
+          </li>
+          <li style="margin-bottom:8px;">
+            <strong>Paste it in mnueron Options.</strong>
+            Open the Options page → Connection → Hosted token.
+          </li>
+          <li style="margin-bottom:0;">
+            <strong>Save.</strong>
+            The connection pill turns green. Next 1.5s typing pause, suggestions show up here.
+          </li>
+        </ol>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button data-act="open-options" style="padding:5px 10px;font-size:12px;background:#7c3aed;color:white;border:0;border-radius:4px;cursor:pointer;font-weight:500;">Open mnueron Options</button>
+          <a href="${escapeHtml(tokenUrl)}" target="_blank" style="padding:5px 10px;font-size:12px;background:white;color:#7c3aed;border:1px solid #c4b5fd;border-radius:4px;cursor:pointer;text-decoration:none;">Get a token →</a>
+          <span style="margin-left:auto;font-size:10px;color:#94a3b8;">One-time setup</span>
+        </div>`;
+    }
+    const { intent, suggestions } = payload.result;
     let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:11px;color:#64748b;">
       <span><strong style="color:#1e293b;">📚 mnueron</strong> · ${intent.kind} ${(intent.confidence * 100).toFixed(0)}%</span>
       <button id="mnueron-close" style="background:none;border:0;cursor:pointer;color:#94a3b8;font-size:14px;">×</button>
@@ -162,6 +237,14 @@
     const close = card.querySelector("#mnueron-close");
     if (close) close.addEventListener("click", () => hideCard());
 
+    const openOpts = card.querySelector('[data-act="open-options"]');
+    if (openOpts) {
+      openOpts.addEventListener("click", async () => {
+        try { await chrome.runtime.sendMessage({ type: "mnueron:open_options" }); } catch {}
+        hideCard();
+      });
+    }
+
     card.querySelectorAll("[data-suggestion-id]").forEach((node) => {
       const sid = node.getAttribute("data-suggestion-id");
       node.querySelectorAll("[data-act]").forEach((btn) => {
@@ -172,7 +255,9 @@
             await logOutcome("accepted", sid);
             node.remove();
           } else if (act === "open") {
-            window.open(`${HOSTED_BASE}/dashboard?memory=${sid}`, "_blank");
+            const cfg = await getHostedConfig();
+            const base = cfg?.baseUrl || DEFAULT_HOSTED_BASE;
+            window.open(`${base}/dashboard?memory=${sid}`, "_blank");
             await logOutcome("opened", sid);
             node.remove();
           } else if (act === "ignore") {
@@ -188,37 +273,40 @@
   async function logOutcome(action, sid) {
     if (!currentOutcomeId) return;
     try {
-      const { apiToken } = await chrome.storage.local.get("apiToken");
-      if (!apiToken) return;
-      await fetch(`${HOSTED_BASE}/api/recall/suggestion-outcome`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiToken}`,
-        },
-        body: JSON.stringify({
-          outcome_id: currentOutcomeId,
-          action,
-          acted_on_id: sid,
-        }),
-      });
-    } catch {
-      // Best-effort
-    }
+      await sendMessageWithTimeout({
+        type: "mnueron:suggestion_outcome",
+        outcome_id: currentOutcomeId,
+        action,
+        acted_on_id: sid,
+      }, 3000);
+    } catch {}
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────
   function isInputLike(el) {
     if (!el) return false;
     if (el.tagName === "TEXTAREA") return true;
     if (el.tagName === "INPUT" && (el.type === "text" || el.type === "search")) return true;
     if (el.isContentEditable) return true;
+    // Walk up the parent chain: ProseMirror on claude.ai sometimes fires
+    // input events on inner spans/divs whose parent is the contenteditable.
+    let p = el.parentElement;
+    while (p) {
+      if (p.isContentEditable) return true;
+      p = p.parentElement;
+      if (!p || p === document.body) break;
+    }
     return false;
   }
 
   function getInputText(el) {
     if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") return el.value || "";
     if (el.isContentEditable) return el.innerText || "";
+    // Walk up to find the contenteditable ancestor and read its text.
+    let p = el.parentElement;
+    while (p && p !== document.body) {
+      if (p.isContentEditable) return p.innerText || "";
+      p = p.parentElement;
+    }
     return "";
   }
 
@@ -241,11 +329,9 @@
     const cardRect = card.getBoundingClientRect();
     let top = rect.bottom + 8;
     let left = rect.left;
-    // If card would overflow viewport bottom, put it above the input.
     if (top + cardRect.height > window.innerHeight - 16) {
       top = Math.max(16, rect.top - cardRect.height - 8);
     }
-    // Keep within viewport horizontally
     if (left + 380 > window.innerWidth) left = window.innerWidth - 380 - 16;
     card.style.top = `${top}px`;
     card.style.left = `${left}px`;

@@ -380,6 +380,7 @@ async function cmdImport(args: string[]) {
 
   if (args.length === 0) {
     console.error('Usage: mnueron import <file> [--ns <namespace>] [--format claude|openai]');
+    console.error('       mnueron import <file.md> [--chunk-size N] [--overlap N] [--ns <namespace>] [--tags a,b] [--dry-run]');
     console.error('       mnueron import --claude-desktop [--probe] [--ns <namespace>]');
     console.error('       mnueron import --claude-cowork  [--probe] [--ns <namespace>] [--limit N] [--dry-run]');
     process.exit(1);
@@ -387,11 +388,27 @@ async function cmdImport(args: string[]) {
   const file = args[0];
   let ns = 'default';
   let format: 'claude' | 'openai' | 'auto' = 'auto';
+  const dryRun = args.includes('--dry-run');
+  let asDoc = args.includes('--doc') || args.includes('--markdown') || args.includes('--as-doc');
+  let chunkSize: number | undefined;
+  let overlap: number | undefined;
+  let docTags: string[] = [];
   for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--ns' && args[i + 1]) { ns = args[++i]; }
+    if ((args[i] === '--ns' || args[i] === '--namespace') && args[i + 1]) { ns = args[++i]; }
     else if (args[i] === '--format' && args[i + 1]) {
       const f = args[++i];
       if (f === 'claude' || f === 'openai') format = f;
+    }
+    else if (args[i] === '--chunk-size' && args[i + 1]) {
+      const n = Number(args[++i]);
+      if (Number.isFinite(n) && n > 0) { chunkSize = Math.floor(n); asDoc = true; }
+    }
+    else if (args[i] === '--overlap' && args[i + 1]) {
+      const n = Number(args[++i]);
+      if (Number.isFinite(n) && n >= 0) { overlap = Math.floor(n); asDoc = true; }
+    }
+    else if (args[i] === '--tags' && args[i + 1]) {
+      docTags = args[++i].split(',').map((s) => s.trim()).filter(Boolean);
     }
   }
 
@@ -402,6 +419,45 @@ async function cmdImport(args: string[]) {
   const sz = (await stat(file)).size;
   console.log(`Reading ${file} (${(sz / 1024).toFixed(1)} KB)...`);
 
+  // Decide: chat-export import (Claude/OpenAI JSON) vs. generic document
+  // import (chunk-and-store any Markdown/text/log file). Route to the doc
+  // importer when the user asked for it (--doc / --chunk-size / --overlap),
+  // when the extension looks like a document, or when --format is auto and
+  // the file doesn't look like a chat export.
+  const lower = file.toLowerCase();
+  const looksLikeDoc = asDoc || /\.(md|markdown|txt|text|rst|adoc|log)$/.test(lower);
+  let routeDoc = looksLikeDoc;
+  if (!routeDoc && format === 'auto') {
+    const head = (await readFile(file, 'utf8')).slice(0, 4000);
+    const isChatExport = head.includes('"chat_messages"') || head.includes('"mapping"');
+    routeDoc = !isChatExport;
+  }
+
+  if (routeDoc) {
+    const { planDocImport, DEFAULT_DOC_CHUNK_SIZE, DEFAULT_DOC_OVERLAP } =
+      await import('./import/file.js');
+    const plan = await planDocImport(file, { namespace: ns, chunkSize, overlap, tags: docTags });
+    console.log(
+      `Document import: "${plan.title}" → ${plan.chunkCount} chunk(s) ` +
+      `(chunk-size ${plan.chunkSize ?? DEFAULT_DOC_CHUNK_SIZE}, overlap ${plan.overlap ?? DEFAULT_DOC_OVERLAP}).`,
+    );
+    if (plan.chunkCount === 0) {
+      console.error('✗ File is empty — nothing to import.');
+      process.exit(1);
+    }
+    if (dryRun) {
+      console.log(`  (--dry-run) Would save ${plan.chunkCount} chunk(s) into namespace "${ns}". Nothing written.`);
+      return;
+    }
+    const provider = makeProvider(loadConfig());
+    const result = await provider.bulkSave(plan.items);
+    await provider.close();
+    console.log(`✓ Saved ${result.saved} chunk(s), errors ${result.errors}, namespace="${ns}"`);
+    console.log(`  Recall later with:  mnueron search "<your query>" --ns ${ns}`);
+    return;
+  }
+
+  // ── Chat-export import (Claude / OpenAI) ──
   if (format === 'auto') {
     const head = (await readFile(file, 'utf8')).slice(0, 4000);
     if (head.includes('"chat_messages"')) format = 'claude';

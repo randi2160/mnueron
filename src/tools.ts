@@ -229,10 +229,74 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'import_file',
+    description:
+      'Import a large local document (Markdown, text, logs, notes, dumps) into memory as small overlapping searchable chunks, instead of loading the whole file into context. Use this when a file is too big to read directly or would bloat the context window / make the client sluggish: it reads the file, splits it into ~chunk_size-char pieces (linked by parent_ref="file:<path>"), and saves each as its own memory. Afterwards, recall only the relevant pieces with memory_recall rather than re-reading the file. Note: local re-import appends a fresh set of chunks (no upsert by source_ref); the hosted backend upserts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to import.' },
+        namespace: { type: 'string', description: 'Target namespace (default "default").' },
+        chunk_size: { type: 'number', description: 'Max characters per chunk (default 1200).' },
+        overlap: { type: 'number', description: 'Overlap in characters between consecutive chunks (default 150).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Extra tags to attach to every chunk.' },
+      },
+      required: ['path'],
+    },
+  },
   // ─── Procedural memory (runbooks) ──────────────────────────────────────
   // Procedural memory stores how-to runbooks: title + trigger phrases + step
   // list. Use these tools when the user asks how to do a recurring task and
   // memory_recall doesn't already surface a runbook automatically.
+  {
+    name: 'procedural_save',
+    description:
+      'Create a saved runbook/procedural memory. Use this when the user says "save to runbook", "save as a runbook", ' +
+      '"save to Mnueron Runbook", or confirms a runbook_suggest proposal. In hosted mode this creates the same record ' +
+      'shown in the Mnueron dashboard Runbooks UI. In local mode it writes to the local procedural memory store.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Short title for the runbook, e.g. "Kill Claude Desktop before clearing caches on Windows".',
+        },
+        summary: {
+          type: 'string',
+          description: 'Optional one-line summary of what the runbook does.',
+        },
+        trigger_phrases: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Phrases that should recall this runbook later.',
+        },
+        steps: {
+          type: 'array',
+          description: 'Ordered runbook steps.',
+          items: {
+            type: 'object',
+            properties: {
+              description: { type: 'string', description: 'What this step does.' },
+              command: { type: 'string', description: 'Optional shell command.' },
+              check: { type: 'string', description: 'Optional verification check.' },
+              notes: { type: 'string', description: 'Optional notes or caveats.' },
+            },
+            required: ['description'],
+          },
+        },
+        namespace: {
+          type: 'string',
+          description: 'Local-mode namespace. Hosted dashboard runbooks are org-scoped and ignore this.',
+        },
+        metadata: {
+          type: 'object',
+          description: 'Optional hosted metadata.',
+        },
+      },
+      required: ['title', 'steps'],
+    },
+  },
   {
     name: 'procedural_match',
     description:
@@ -341,7 +405,7 @@ export const TOOL_DEFINITIONS = [
       'Detect whether the user is currently DESCRIBING repeatable steps that could become a saved runbook. ' +
       'Use after the user has finished explaining a multi-step procedure (deployment, setup, troubleshooting, etc.). ' +
       'Returns whether the content looks runbook-shaped, a confidence score, the detected steps, and a suggested title. ' +
-      'If confidence ≥ 0.75, offer the user: "Save as a runbook?" — and on yes, call procedural memory save with the extracted steps. ' +
+      'If confidence ≥ 0.75, offer the user: "Save as a runbook?" — and on yes, call procedural_save with the extracted steps. ' +
       'Do NOT call this on every message; only when the user has clearly described a sequence.',
     inputSchema: {
       type: 'object',
@@ -630,12 +694,111 @@ export async function handleToolCall(
         scanned_roots: probe.scannedRoots,
       };
     }
+    case 'import_file': {
+      const { planDocImport } = await import('./import/file.js');
+      const path = String(args.path ?? '');
+      if (!path) throw new Error('path is required');
+      const ns = (args.namespace as string) ?? defaultNamespace;
+      const chunkSize = typeof args.chunk_size === 'number'
+        ? Math.max(1, Math.floor(args.chunk_size)) : undefined;
+      const overlap = typeof args.overlap === 'number'
+        ? Math.max(0, Math.floor(args.overlap)) : undefined;
+      const extraTags = Array.isArray(args.tags)
+        ? (args.tags as unknown[]).map(String) : [];
+
+      const plan = await planDocImport(path, { namespace: ns, chunkSize, overlap, tags: extraTags });
+      if (plan.chunkCount === 0) {
+        return {
+          saved: 0, errors: 0, namespace: ns, title: plan.title,
+          chunk_count: 0, size_bytes: plan.sizeBytes, dropped_by_plugin: 0,
+          note: 'File is empty — nothing imported.',
+        };
+      }
+
+      let droppedByPlugin = 0;
+      const filtered: SaveMemoryInput[] = [];
+      for (const it of plan.items) {
+        const transformed = await runBeforeSave(it, registry);
+        if (transformed === null) droppedByPlugin++;
+        else filtered.push(transformed);
+      }
+      const result = await provider.bulkSave(filtered);
+      return {
+        ...result,
+        namespace: ns,
+        title: plan.title,
+        source_path: plan.filePath,
+        chunk_count: plan.chunkCount,
+        chunk_size: plan.chunkSize,
+        overlap: plan.overlap,
+        size_bytes: plan.sizeBytes,
+        dropped_by_plugin: droppedByPlugin,
+      };
+    }
 
     // ── Procedural memory tools ────────────────────────────────────────
-    // All four delegate to RemoteProvider methods (defined in remote.ts).
-    // Local SQLite has procedural support too but a different shape; the
-    // bridging is left for a follow-up. If the user is on a local-only
-    // setup, these tools error gracefully with a clear message.
+    // Hosted procedural tools delegate to RemoteProvider methods
+    // (defined in remote.ts). procedural_save also bridges to local SQLite
+    // so "save to runbook" stays local-first when no hosted token is set.
+    case 'procedural_save': {
+      const title = String(args.title ?? '').trim();
+      if (!title) throw new Error('title is required');
+
+      const rawSteps = Array.isArray(args.steps) ? args.steps : [];
+      const steps = rawSteps
+        .map((s) => {
+          const step = (s ?? {}) as Record<string, unknown>;
+          return {
+            description: String(step.description ?? '').trim(),
+            command: typeof step.command === 'string' && step.command.trim() ? step.command.trim() : undefined,
+            check: typeof step.check === 'string' && step.check.trim() ? step.check.trim() : undefined,
+            notes: typeof step.notes === 'string' && step.notes.trim() ? step.notes.trim() : undefined,
+          };
+        })
+        .filter((s) => s.description);
+      if (steps.length === 0) throw new Error('at least one step with description is required');
+
+      const triggerPhrases = Array.isArray(args.trigger_phrases)
+        ? (args.trigger_phrases as unknown[])
+            .map((t) => (typeof t === 'string' ? t.trim() : ''))
+            .filter(Boolean)
+        : [];
+      const summary = typeof args.summary === 'string' ? args.summary.trim() : '';
+
+      const hostedSave = (provider as any).proceduralSave;
+      if (typeof hostedSave === 'function') {
+        return await hostedSave.call(provider, {
+          title,
+          summary: summary || null,
+          trigger_phrases: triggerPhrases,
+          steps,
+          metadata: typeof args.metadata === 'object' && args.metadata !== null
+            ? args.metadata as Record<string, unknown>
+            : {},
+        });
+      }
+
+      const localSave = provider.saveProcedural;
+      if (typeof localSave !== 'function') {
+        throw new Error('procedural_save is not supported by this provider.');
+      }
+      const saved = await localSave.call(provider, {
+        name: title,
+        namespace: (args.namespace as string) ?? defaultNamespace,
+        summary,
+        steps: steps.map((s) => ({
+          step: s.description,
+          code: s.command,
+          why: [s.check ? `Check: ${s.check}` : '', s.notes ?? ''].filter(Boolean).join('\n') || undefined,
+        })),
+        tools: triggerPhrases,
+      });
+      return {
+        ...saved,
+        trigger_phrases: triggerPhrases,
+        note: 'Saved to local procedural memory. Hosted dashboard Runbooks UI shows hosted runbooks only.',
+      };
+    }
     case 'procedural_match': {
       const trigger = String(args.trigger ?? '');
       if (!trigger) throw new Error('trigger is required');

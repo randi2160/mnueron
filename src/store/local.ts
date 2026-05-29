@@ -837,10 +837,11 @@ export class LocalProvider implements Provider {
       const wanted = new Set(input.tags);
       memories = memories.filter(m => m.tags.some(t => wanted.has(t)));
     }
-    // Fire-and-forget recall-event capture. Fail-open: a bad insert never
-    // breaks recall. The savings dashboard reads from recall_events to
-    // show tokens / dollars / IDE crashes saved vs. dumping full context.
-    this.recordRecallEvent(input, memories);
+    // Recall-event capture moved to the MCP-server tool handler
+    // (src/index.ts) so it's provider-agnostic — fires for both local and
+    // hosted modes. recordRecallEvent() below is kept for any direct
+    // LocalProvider callers (e.g. the benchmark adapter) that still want
+    // the inline capture, but it's no longer invoked from search().
     return memories;
   }
 

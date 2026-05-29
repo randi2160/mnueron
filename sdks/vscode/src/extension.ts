@@ -26,6 +26,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 
 import { MnueronClient, Memory } from './client.js';
+import { MnueronSuggestionsProvider } from './suggestions-view.js';
 
 let client: MnueronClient;
 let statusBar: vscode.StatusBarItem;
@@ -37,6 +38,19 @@ export function activate(context: vscode.ExtensionContext) {
   memoryProvider = new MemoryTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('mnueronMemories', memoryProvider),
+  );
+
+  // Phase 3 — live suggestion sidebar. Watches the editor for 2s typing pauses
+  // and posts the surrounding context to /api/recall/assist; the webview
+  // renders the response as cards with Insert / Open / Dismiss actions.
+  // Outcomes log to /api/recall/suggestion-outcome so the Phase 5 feedback
+  // loop can tune per-intent thresholds.
+  const suggestionsProvider = new MnueronSuggestionsProvider(context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      MnueronSuggestionsProvider.viewType,
+      suggestionsProvider,
+    ),
   );
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

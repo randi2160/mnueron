@@ -1,8 +1,8 @@
 {
   "name": "mnueron-vscode",
-  "displayName": "mnueron — AI memory",
-  "description": "Save, search, and inject memories from mnueron — works alongside Copilot, Cursor, and Cline.",
-  "version": "0.1.8",
+  "displayName": "mnueron \u2014 AI memory",
+  "description": "Save, search, and inject memories from mnueron \u2014 works alongside Copilot, Cursor, and Cline.",
+  "version": "0.1.10",
   "publisher": "mnueron",
   "engines": {
     "vscode": "^1.85.0"
@@ -34,7 +34,7 @@
       },
       {
         "command": "mnueron.recall",
-        "title": "mnueron: Recall memory…",
+        "title": "mnueron: Recall memory\u2026",
         "icon": "$(search)"
       },
       {
@@ -106,6 +106,12 @@
           "id": "mnueronMemories",
           "name": "Memories",
           "icon": "media/sidebar.svg"
+        },
+        {
+          "type": "webview",
+          "id": "mnueron.suggestions",
+          "name": "Suggestions",
+          "icon": "media/sidebar.svg"
         }
       ]
     },
@@ -134,7 +140,7 @@
         "mnueron.apiToken": {
           "type": "string",
           "default": "",
-          "description": "Bearer token (mnu_…) for hosted mode. Issue one at /account-settings/tokens. Leave blank for local mode."
+          "description": "Bearer token (mnu_\u2026) for hosted mode. Issue one at /account-settings/tokens. Leave blank for local mode."
         },
         "mnueron.activeNamespace": {
           "type": "string",
@@ -145,6 +151,13 @@
           "type": "boolean",
           "default": false,
           "description": "When opening a file, search mnueron for related memories and show a count in the status bar."
+        },
+        "mnueron.suggestionThreshold": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence (0-1) a memory must score to appear in the Suggestions pane. Lower = more cards but noisier; higher = fewer but more confident. Server default is 0.75; this ships at 0.5 so the pane surfaces matches that the default would filter out."
         }
       }
     }

@@ -42,6 +42,19 @@ const SAVE_CONCURRENCY = 2;
 const MIN_WRITE_INTERVAL_MS = 1100;
 const SAVE_MAX_RETRIES = 4;
 
+function detectRemoteClient(): string {
+  const explicit = process.env.MNUERON_CLIENT;
+  if (explicit && explicit.trim().length > 0) return explicit.trim().toLowerCase();
+  if (process.env.CURSOR_TRACE_ID || process.env.CURSOR_USER) return 'cursor';
+  if (process.env.CLAUDE_CODE_SSE_PORT) return 'claude-code';
+  if (process.env.CODEX_HOME) return 'openai-codex';
+  if (process.env.VSCODE_PID || process.env.VSCODE_INJECTION) {
+    return process.env.CLINE_INSTALLED ? 'cline' : 'vscode';
+  }
+  if (process.env.CODEIUM_API_URL) return 'windsurf';
+  return 'mnueron-mcp';
+}
+
 interface HttpError extends Error {
   status?: number;
   retryAfterMs?: number;
@@ -62,6 +75,7 @@ export class RemoteProvider implements Provider {
         'Authorization': `Bearer ${this.token}`,
         'Content-Type': 'application/json',
         'User-Agent': 'mnueron-mcp/0.2',
+        'X-Mnueron-Client': detectRemoteClient(),
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -231,6 +245,26 @@ export class RemoteProvider implements Provider {
   // text[] trigger_phrases vs JSONB schema. These methods talk to the
   // hosted shape; the MCP layer in tools.ts adapts between them and the
   // ProceduralMemoryView local shape if needed.
+
+  /**
+   * Create a hosted runbook. This is the write path used by the MCP
+   * `procedural_save` tool so agents can push directly into the dashboard
+   * Runbooks UI instead of saving a plain memory.
+   */
+  async proceduralSave(input: {
+    title: string;
+    summary?: string | null;
+    trigger_phrases?: string[];
+    steps?: Array<{
+      description: string;
+      command?: string;
+      check?: string;
+      notes?: string;
+    }>;
+    metadata?: Record<string, unknown>;
+  }): Promise<HostedProcedural> {
+    return await this.req<HostedProcedural>('POST', '/api/procedural', input);
+  }
 
   /**
    * Look up runbooks whose trigger_phrases contain the given phrase

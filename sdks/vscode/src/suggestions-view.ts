@@ -108,6 +108,13 @@ export class MnueronSuggestionsProvider implements vscode.WebviewViewProvider {
         });
         return;
       }
+      // Threshold lets the user override the server's default 0.75 floor
+      // without going through the Phase 5 tuning UI. Sent as `threshold` in
+      // the body; recall-assist accepts it. Default is 0.5 (set in package.json
+      // configuration block).
+      const threshold = vscode.workspace
+        .getConfiguration("mnueron")
+        .get<number>("suggestionThreshold");
       const resp = await fetch(`${HOSTED_BASE_URL}/api/recall/assist`, {
         method: "POST",
         headers: {
@@ -118,6 +125,7 @@ export class MnueronSuggestionsProvider implements vscode.WebviewViewProvider {
           text,
           cwd: this.getCwd(),
           surface: "vscode",
+          ...(typeof threshold === "number" ? { threshold } : {}),
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

@@ -46,6 +46,11 @@ export interface MemoryFilters {
 export interface SearchInput extends MemoryFilters {
   query: string;
   k?: number;
+  /** Caller's intended LLM (gpt-4o, claude-sonnet-4-5, ...). Used by the
+   *  savings dashboard to price the avoided context cost. Optional. */
+  model_id?: string;
+  /** Calling client (cursor, claude-desktop, openclaw, ...). Optional. */
+  client?: string;
 }
 
 export interface ListInput extends MemoryFilters {

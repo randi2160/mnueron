@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Provider } from '../store/provider.js';
+import { getSavingsSummary, type Window as SavingsWindow } from '../savings/summary.js';
+import { DEFAULT_MODEL_ID } from '../savings/pricing.js';
+import type { LocalProvider } from '../store/local.js';
 import { importClaudeExport } from '../import/claude.js';
 import { importOpenAIExport } from '../import/openai.js';
 import { probeClaudeCowork, importFromCoworkSession } from '../import/claude_cowork.js';
@@ -91,6 +94,34 @@ async function route(p: Provider, req: IncomingMessage, res: ServerResponse) {
     const total = ns.reduce((s, n) => s + n.count, 0);
     const latest = ns.length ? Math.max(...ns.map(n => n.last_updated || 0)) : 0;
     return sendJson(res, 200, { total, namespaces: ns.length, latest });
+  }
+
+  // ── v0.6 — recall savings dashboard ────────────────────────────────────
+  // GET /api/savings/summary?window=day|week|month|all&model=<id>
+  // Aggregates the recall_events table populated by LocalProvider.search().
+  // Returns the shape the React savings widget consumes.
+  if (method === 'GET' && path === '/api/savings/summary') {
+    const win = (url.searchParams.get('window') as SavingsWindow | null) ?? 'month';
+    const model = url.searchParams.get('model') ?? DEFAULT_MODEL_ID;
+    // The dashboard server only runs against LocalProvider — get the raw
+    // SQLite handle off it for the aggregation queries.
+    const lp = p as LocalProvider & { db?: unknown };
+    const db = (lp as unknown as { db: import('better-sqlite3').Database }).db;
+    if (!db) {
+      return sendJson(res, 200, {
+        window: win,
+        recalls_count: 0,
+        tokens_returned: 0,
+        tokens_baseline_capped: 0,
+        tokens_saved: 0,
+        dollars_saved: 0,
+        ide_crashes_avoided: 0,
+        default_model_id: model,
+        trend: [],
+        top_saves: [],
+      });
+    }
+    return sendJson(res, 200, getSavingsSummary(db, win, model));
   }
 
   if (method === 'GET' && path === '/api/memories') {

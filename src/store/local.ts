@@ -1,4 +1,9 @@
 import Database from 'better-sqlite3';
+import {
+  RECALL_EVENTS_DDL,
+  buildRecallEvent,
+  approximateTokens,
+} from '../savings/recall-event.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -348,6 +353,12 @@ export class LocalProvider implements Provider {
 
     // Procedural memory table (idempotent). Mem0 leapfrog feature.
     ensureProceduralSchema(this.db);
+  
+    // ── Recall savings (v0.6) ────────────────────────────────────────
+    // Logs every search() for the savings dashboard widget.
+    // DDL lives in src/savings/recall-event.ts so the savings module
+    // owns its own schema.
+    this.db.exec(RECALL_EVENTS_DDL);
   }
 
   // ─── write path ──────────────────────────────────────────────────────────
@@ -826,7 +837,80 @@ export class LocalProvider implements Provider {
       const wanted = new Set(input.tags);
       memories = memories.filter(m => m.tags.some(t => wanted.has(t)));
     }
+    // Fire-and-forget recall-event capture. Fail-open: a bad insert never
+    // breaks recall. The savings dashboard reads from recall_events to
+    // show tokens / dollars / IDE crashes saved vs. dumping full context.
+    this.recordRecallEvent(input, memories);
     return memories;
+  }
+
+  /**
+   * Logs one row to recall_events for the savings dashboard. Sums every
+   * memory in the namespace once to get the baseline 'what would I have
+   * had to send' figure (cheap — LENGTH() over content text). Fail-open.
+   */
+  private recordRecallEvent(input: SearchInput, returned: Memory[]): void {
+    try {
+      const tokens_returned = returned.reduce(
+        (sum, m) => sum + approximateTokens(m.content),
+        0,
+      );
+
+      const ns = input.namespace ?? null;
+      let baseline_chars = 0;
+      if (ns) {
+        const row = this.db
+          .prepare(
+            `SELECT COALESCE(SUM(LENGTH(content)), 0) AS chars
+               FROM memories
+              WHERE namespace = ?`,
+          )
+          .get(ns) as { chars?: number } | undefined;
+        baseline_chars = row?.chars ?? 0;
+      } else {
+        const row = this.db
+          .prepare(`SELECT COALESCE(SUM(LENGTH(content)), 0) AS chars FROM memories`)
+          .get() as { chars?: number } | undefined;
+        baseline_chars = row?.chars ?? 0;
+      }
+      const tokens_baseline_namespace = Math.ceil(baseline_chars / 4);
+
+      const ev = buildRecallEvent({
+        namespace: ns,
+        query: input.query,
+        tokens_returned,
+        tokens_baseline_namespace,
+        model_id: input.model_id ?? null,
+        client: input.client ?? null,
+      });
+
+      this.db
+        .prepare(
+          `INSERT INTO recall_events
+             (id, created_at, namespace, query_hash, tokens_returned,
+              tokens_baseline_namespace, tokens_baseline_capped, model_id,
+              context_limit, client)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ev.id,
+          ev.created_at,
+          ev.namespace,
+          ev.query_hash,
+          ev.tokens_returned,
+          ev.tokens_baseline_namespace,
+          ev.tokens_baseline_capped,
+          ev.model_id,
+          ev.context_limit,
+          ev.client,
+        );
+    } catch (e) {
+      // Fail-open by design — never let recall observability break recall.
+      console.warn(
+        '[mnueron/savings] recall-event capture failed:',
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
 
   async list(input: ListInput): Promise<Memory[]> {

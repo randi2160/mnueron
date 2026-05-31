@@ -1,63 +1,66 @@
-﻿{
-    "name":  "mnueron",
-    "version":  "0.6.2",
-    "description":  "MNUERON â€” persistent memory for Claude Desktop, Claude Code, Cursor, and any AI dev tool or app. Local-first, free, with optional hosted multi-tenant backend.",
-    "type":  "module",
-    "main":  "dist/index.js",
-    "bin":  {
-                "mnueron":  "dist/cli.js",
-                "mnueron-mcp":  "dist/index.js"
-            },
-    "scripts":  {
-                    "build":  "tsc",
-                    "start":  "node dist/index.js",
-                    "dev":  "tsx watch src/index.ts",
-                    "cli":  "tsx src/cli.ts",
-                    "setup":  "node dist/cli.js setup",
-                    "test":  "node scripts/smoke.mjs",
-                    "typecheck":  "tsc --noEmit",
-                    "benchmark":  "tsx scripts/benchmark/run.ts",
-                    "benchmark:smoke":  "tsx scripts/benchmark/run.ts --smoke",
-                    "benchmark:stub":  "tsx scripts/benchmark/run.ts --stub"
-                },
-    "dependencies":  {
-                         "@modelcontextprotocol/sdk":  "^1.0.4",
-                         "@xenova/transformers":  "^2.17.2",
-                         "better-sqlite3":  "^12.10.0",
-                         "sqlite-vec":  "^0.1.7",
-                         "zod":  "^3.23.8"
-                     },
-    "devDependencies":  {
-                            "@types/better-sqlite3":  "^7.6.11",
-                            "@types/node":  "^22.10.0",
-                            "tsx":  "^4.19.2",
-                            "typescript":  "^5.7.0",
-                            "vitest":  "^4.1.7"
-                        },
-    "engines":  {
-                    "node":  "\u003e=20.0.0"
-                },
-    "files":  [
-                  "dist/",
-                  "dashboard/",
-                  "README.md",
-                  "INSTALL.md",
-                  "ARCHITECTURE.md",
-                  "LICENSE",
-                  "NOTICE",
-                  "LICENSE-OVERVIEW.md"
-              ],
-    "keywords":  [
-                     "ai",
-                     "memory",
-                     "agents",
-                     "llm",
-                     "claude",
-                     "openai",
-                     "mcp",
-                     "model-context-protocol",
-                     "cursor",
-                     "claude-code"
-                 ],
-    "license":  "MIT"
+{
+  "name": "mnueron",
+  "version": "0.6.2",
+  "description": "MNUERON â€” persistent memory for Claude Desktop, Claude Code, Cursor, and any AI dev tool or app. Local-first, free, with optional hosted multi-tenant backend.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mnueron": "dist/cli.js",
+    "mnueron-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "cli": "tsx src/cli.ts",
+    "setup": "node dist/cli.js setup",
+    "test": "node scripts/smoke.mjs",
+    "typecheck": "tsc --noEmit",
+    "benchmark": "tsx scripts/benchmark/run.ts",
+    "benchmark:smoke": "tsx scripts/benchmark/run.ts --smoke",
+    "benchmark:stub": "tsx scripts/benchmark/run.ts --stub"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "dashboard/",
+    "README.md",
+    "INSTALL.md",
+    "ARCHITECTURE.md",
+    "LICENSE",
+    "NOTICE",
+    "LICENSE-OVERVIEW.md"
+  ],
+  "keywords": [
+    "ai",
+    "memory",
+    "agents",
+    "llm",
+    "claude",
+    "openai",
+    "mcp",
+    "model-context-protocol",
+    "cursor",
+    "claude-code"
+  ],
+  "license": "MIT",
+  "overrides": {
+    "protobufjs": "^7.5.8"
+  }
 }

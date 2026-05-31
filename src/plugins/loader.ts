@@ -26,6 +26,7 @@ import type {
   ExternalSource,
   MemoryExporter,
   EmbeddingProvider,
+  MeetingSource,
 } from './types.js';
 import type { Provider } from '../store/provider.js';
 
@@ -44,6 +45,7 @@ export interface PluginRegistry {
   sources: ExternalSource[];
   exporters: MemoryExporter[];
   embedders: EmbeddingProvider[];
+  meetingSources: MeetingSource[];
   loaded: LoadedPlugin[];
 }
 
@@ -59,6 +61,7 @@ export async function loadPlugins(provider: Provider): Promise<PluginRegistry> {
     sources: [],
     exporters: [],
     embedders: [],
+    meetingSources: [],
     loaded: [],
   };
 
@@ -74,6 +77,7 @@ export async function loadPlugins(provider: Provider): Promise<PluginRegistry> {
         registry.sources.push(...(loaded.manifest.sources ?? []));
         registry.exporters.push(...(loaded.manifest.exporters ?? []));
         registry.embedders.push(...(loaded.manifest.embedders ?? []));
+        registry.meetingSources.push(...(loaded.manifest.meetingSources ?? []));
         registry.loaded.push(loaded);
         console.log(`[plugins] activated ${name}@${loaded.manifest.version}`);
       }

@@ -31,6 +31,7 @@ const EMPTY_REGISTRY: PluginRegistry = {
   sources: [],
   exporters: [],
   embedders: [],
+  meetingSources: [],
   loaded: [],
 };
 
@@ -452,6 +453,63 @@ export const TOOL_DEFINITIONS = [
         },
       },
       required: ['source_text', 'action', 'surface'],
+    },
+  },
+  {
+    name: 'memory_share',
+    description:
+      'Generate a public read-only URL for a memory (or revoke an existing share). ' +
+      'Use when the user says "share this memory", "send this to <person>", "make this public", ' +
+      'or asks for a link to a specific memory. Pass visibility="public" to mint a URL, ' +
+      'or "private"/"team" to revoke. Returns { url, public_token, visibility } on success. ' +
+      'Hosted mode only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'string', description: 'The memory id (from memory_recall / memory_list).' },
+        visibility: { type: 'string', enum: ['private', 'team', 'public'],
+          description: 'Target visibility. "public" generates a /m/<token> URL. "private" or "team" revoke any existing public link.' },
+      },
+      required: ['memory_id', 'visibility'],
+    },
+  },
+  {
+    name: 'meet_recall',
+    description:
+      'Semantic search across MEETING content — transcripts, decisions, action items. ' +
+      'Use when the user asks about a past meeting, e.g. "what did we decide about auth", ' +
+      '"what action items came out of standup", "who owns the migration". Returns memory rows ' +
+      'with meeting metadata so the agent can cite the source meeting. Filter by kind ' +
+      '(transcript|decision|action_item|summary) to narrow.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language query.' },
+        k: { type: 'number', description: 'Top-k results to return. Default 10. Max 50.' },
+        namespace: { type: 'string', description: 'Optional: restrict to one meeting namespace.' },
+        kind: { type: 'string', enum: ['transcript', 'decision', 'action_item', 'summary'],
+          description: 'Optional: restrict to one meeting-derived memory kind.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'decision_search',
+    description:
+      'Search the decisions table specifically. Returns concrete agreements ranked above ' +
+      'discussion. Use when the user asks "what did we decide about X", "what was agreed", ' +
+      '"is there a decision on Y yet". Each result includes the meeting context, who endorsed, ' +
+      'confidence score, and current status (proposed | agreed | reversed | archived).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language query.' },
+        namespace: { type: 'string', description: 'Optional: restrict to one meeting namespace.' },
+        status: { type: 'string', enum: ['proposed', 'agreed', 'reversed', 'archived'],
+          description: 'Optional: filter by status.' },
+        since: { type: 'number', description: 'Optional: unix ms cutoff; only decisions made on or after this time.' },
+      },
+      required: ['query'],
     },
   },
 ];
@@ -999,6 +1057,67 @@ export async function handleToolCall(
         acted_on_id: typeof args.acted_on_id === 'string' ? args.acted_on_id : null,
       });
       return { ok: true, recorded: true };
+    }
+
+    case 'memory_share': {
+      const memoryId = String(args.memory_id ?? '');
+      const visibility = String(args.visibility ?? '');
+      if (!memoryId) throw new Error('memory_id is required');
+      if (!['private', 'team', 'public'].includes(visibility)) {
+        throw new Error("visibility must be one of: 'private', 'team', 'public'");
+      }
+      const share = (provider as { share?: Function }).share;
+      if (typeof share !== 'function') {
+        return {
+          ok: false, hosted_only: true,
+          error: 'memory_share requires hosted mnueron.',
+        };
+      }
+      const result = await share.call(provider, memoryId, visibility);
+      return { ok: true, ...result };
+    }
+
+    case 'meet_recall': {
+      const query = String(args.query ?? '');
+      if (!query) throw new Error('query is required');
+      const meetRecall = (provider as { meetRecall?: Function }).meetRecall;
+      if (typeof meetRecall === 'function') {
+        return await meetRecall.call(provider, query, {
+          k: typeof args.k === 'number' ? Math.min(50, Math.max(1, args.k)) : 10,
+          namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+          kind: typeof args.kind === 'string' ? args.kind : undefined,
+        });
+      }
+      // Local fallback: filter regular search by meeting metadata tag.
+      const k = typeof args.k === 'number' ? Math.min(50, Math.max(1, args.k)) : 10;
+      const memories = await provider.search({
+        query,
+        namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+        k,
+        tags: ['meeting'],
+      });
+      return { results: memories };
+    }
+
+    case 'decision_search': {
+      const query = String(args.query ?? '');
+      if (!query) throw new Error('query is required');
+      const decisionSearch = (provider as { decisionSearch?: Function }).decisionSearch;
+      if (typeof decisionSearch === 'function') {
+        return await decisionSearch.call(provider, query, {
+          namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+          status: typeof args.status === 'string' ? args.status : undefined,
+          since: typeof args.since === 'number' ? args.since : undefined,
+        });
+      }
+      // Local fallback: filter regular search by meeting + decision tags.
+      const memories = await provider.search({
+        query,
+        namespace: typeof args.namespace === 'string' ? args.namespace : undefined,
+        k: 25,
+        tags: ['meeting', 'decision'],
+      });
+      return { decisions: memories };
     }
 
     default:

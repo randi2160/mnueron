@@ -350,6 +350,27 @@ export class RemoteProvider implements Provider {
     };
   }
 
+  /**
+   * Set a memory's visibility (private/team/public). When transitioning to
+   * 'public', the hosted side generates a fresh 32-byte token. Returns the
+   * full visibility row including the URL the agent should share. Used by
+   * the memory_share MCP tool.
+   */
+  async share(
+    memoryId: string,
+    visibility: 'private' | 'team' | 'public',
+  ): Promise<{
+    memory_id: string;
+    visibility: 'private' | 'team' | 'public';
+    public_token: string | null;
+    url: string | null;
+    updated_at: number | null;
+  }> {
+    return this.req('PATCH', `/api/memories/${encodeURIComponent(memoryId)}/visibility`, {
+      visibility,
+    });
+  }
+
   async close(): Promise<void> { /* no-op for HTTP */ }
 }
 

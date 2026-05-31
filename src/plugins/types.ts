@@ -53,6 +53,7 @@ export interface MnueronPlugin {
   sources?: ExternalSource[];
   exporters?: MemoryExporter[];
   embedders?: EmbeddingProvider[];
+  meetingSources?: MeetingSource[];
   // Tool detectors live in src/detectors and follow that interface; plugins
   // can register additional detectors at runtime via ctx.registerDetector().
 }
@@ -124,4 +125,121 @@ export interface EmbeddingProvider {
   dimensions: number;
   embed(text: string): Promise<number[]>;
   embedBatch?(texts: string[]): Promise<number[][]>;
+}
+
+// ---------------------------------------------------------------------------
+// Meeting source plugins
+//
+// Meetings are a richer primitive than memories — a single meeting becomes
+// a meetings row, attendee rows, transcript-chunk memory rows, decision
+// rows, action-item rows, and link rows in one transactional write. The
+// MeetingSource plugin interface returns the normalized envelope; the core
+// meeting pipeline does everything downstream of that envelope.
+//
+// Connectors implement at minimum one of:
+//   - onWebhook(payload) — vendor pushes when a meeting ends (Granola, Read.ai)
+//   - onPoll() — we poll the vendor's API (Otter free tier, Fireflies)
+//   - onUpload(file) — user-driven manual ingestion (upload plugin)
+//   - onEmail(email) — inbound email to magic address (email-forward plugin)
+//
+// Plugins do NOT touch the database or embedder directly. Returning an
+// envelope hands off to core, which does all the work that needs RLS and
+// internal API access.
+// ---------------------------------------------------------------------------
+
+/** One meeting transcript turn (a single contiguous utterance from one speaker). */
+export interface MeetingTurn {
+  speaker: string;
+  text: string;
+  /** Milliseconds from meeting start. */
+  started_at_ms: number;
+}
+
+/** Attendee record produced by a meeting source. */
+export interface MeetingAttendee {
+  name: string;
+  email?: string;
+  /** 'organizer' | 'attendee' | 'invited_absent' */
+  role?: 'organizer' | 'attendee' | 'invited_absent';
+}
+
+/**
+ * Normalized meeting payload. The single contract between a MeetingSource
+ * plugin and the core meeting pipeline. Connectors translate vendor-specific
+ * shapes into this envelope; core does not know or care where it came from.
+ */
+export interface MeetingEnvelope {
+  /** Plugin id that produced this envelope. Filled in by the registry. */
+  source: string;
+  /**
+   * The source's stable id for this meeting (e.g. granola note id, fathom
+   * recording id). Used together with `source` for dedupe.
+   */
+  source_ref: string;
+  title: string;
+  /** Unix ms. */
+  started_at: number;
+  duration_seconds: number | null;
+  attendees: MeetingAttendee[];
+  transcript: MeetingTurn[];
+  /** Vendor-provided summary if any. Core may also generate its own. */
+  summary?: string;
+  /** Verbatim source payload, kept for audit and debug. */
+  raw?: Record<string, unknown>;
+}
+
+/**
+ * Result of ingesting one envelope. Mostly opaque to plugins; surfaces
+ * enough that a connector can log a useful confirmation back to the
+ * user / vendor.
+ */
+export interface MeetingIngestResult {
+  meeting_id: string;
+  status: 'created' | 'merged' | 'duplicate';
+  decision_count: number;
+  action_item_count: number;
+}
+
+/**
+ * Plugin interface for meeting sources. A plugin implements whichever
+ * lifecycle hooks make sense for its vendor.
+ */
+export interface MeetingSource {
+  id: string;
+  /** Human-readable name for the integrations dashboard. */
+  display_name: string;
+  /**
+   * Vendor logo (path under /public/integrations/) or null to fall back
+   * to a generic icon.
+   */
+  logo?: string;
+
+  /**
+   * Called when a vendor-specific webhook arrives at
+   * /api/integrations/meet/<plugin.id>/webhook. The plugin validates the
+   * signature, translates the payload, and returns zero or more envelopes.
+   * Throwing aborts processing for that webhook (vendor will retry).
+   */
+  onWebhook?(payload: unknown, headers: Record<string, string>, ctx: PluginContext): Promise<MeetingEnvelope[]>;
+
+  /**
+   * Called on the poll schedule (or by manual trigger). Plugin reaches
+   * out to vendor API and returns new envelopes since last poll. Polled
+   * sources should track their cursor in ctx.storage.
+   */
+  pollInterval?: number;
+  onPoll?(ctx: PluginContext): Promise<MeetingEnvelope[]>;
+
+  /**
+   * Called when a user uploads a file via the dashboard. Plugin parses
+   * the file (txt, vtt, srt, json) and returns one envelope. The upload
+   * plugin implements this; vendor plugins do not.
+   */
+  onUpload?(file: { name: string; mime: string; bytes: Uint8Array }, ctx: PluginContext): Promise<MeetingEnvelope>;
+
+  /**
+   * Called when an email arrives at the org's magic ingest address. The
+   * email-forward plugin implements this; vendor plugins do not.
+   */
+  onEmail?(email: { from: string; subject: string; text: string; html?: string; attachments: Array<{ name: string; mime: string; bytes: Uint8Array }> }, ctx: PluginContext): Promise<MeetingEnvelope[]>;
 }

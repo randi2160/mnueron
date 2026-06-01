@@ -18,7 +18,7 @@ export interface LoComoTurn {
   speaker: string;
   dia_id: string;
   text: string;
-  /** Some turns reference images. We ignore images for text-only mnueron. */
+  /** Some turns reference images; LoCoMo provides BLIP captions we ingest as text. */
   img_file?: string[];
   img_url?: string[];
   blip_caption?: string;
@@ -32,12 +32,14 @@ export interface LoComoSample {
   /** Map of "session_1" → [turns], plus matching "session_1_date_time" keys. */
   sessions: Record<string, LoComoTurn[]>;
   sessionTimestamps: Record<string, string>;
+  sessionSummaries: Record<string, string>;
+  sessionObservations: Record<string, string[]>;
   qa: LoComoQA[];
 }
 
 export interface LoComoQA {
   question: string;
-  answer: string;
+  answer?: string;
   category: number;
   /** Dialog ids that contain the evidence. Format: "D{session}:{turn}". */
   evidence?: string[];
@@ -57,11 +59,39 @@ function normalizeSample(raw: any, idx: number): LoComoSample {
   const conv = raw.conversation ?? raw;
   const sessions: Record<string, LoComoTurn[]> = {};
   const timestamps: Record<string, string> = {};
+  const summaries: Record<string, string> = {};
+  const observations: Record<string, string[]> = {};
   for (const [k, v] of Object.entries(conv)) {
     if (k.endsWith('_date_time') && typeof v === 'string') {
       timestamps[k.replace('_date_time', '')] = v;
+    } else if (k.endsWith('_summary') && typeof v === 'string') {
+      summaries[k.replace('_summary', '')] = v;
     } else if (k.startsWith('session_') && Array.isArray(v)) {
       sessions[k] = v as LoComoTurn[];
+    }
+  }
+  if (raw.session_summary && typeof raw.session_summary === 'object') {
+    for (const [k, v] of Object.entries(raw.session_summary)) {
+      if (!k.endsWith('_summary') || typeof v !== 'string') continue;
+      summaries[k.replace('_summary', '')] = v;
+    }
+  }
+  if (raw.event_summary && typeof raw.event_summary === 'object') {
+    for (const [k, v] of Object.entries(raw.event_summary)) {
+      if (!k.startsWith('events_session_') || !v || typeof v !== 'object') continue;
+      const sessionKey = k.replace('events_', '');
+      const eventText = flattenEventSummary(v as Record<string, unknown>);
+      if (!eventText) continue;
+      summaries[sessionKey] = summaries[sessionKey]
+        ? `${summaries[sessionKey]}\nKey events: ${eventText}`
+        : `Key events: ${eventText}`;
+    }
+  }
+  if (raw.observation && typeof raw.observation === 'object') {
+    for (const [k, v] of Object.entries(raw.observation)) {
+      if (!k.endsWith('_observation') || !v || typeof v !== 'object') continue;
+      const sessionKey = k.replace('_observation', '');
+      observations[sessionKey] = flattenObservations(v as Record<string, unknown>);
     }
   }
   return {
@@ -70,8 +100,40 @@ function normalizeSample(raw: any, idx: number): LoComoSample {
     speaker_b: conv.speaker_b ?? 'B',
     sessions,
     sessionTimestamps: timestamps,
+    sessionSummaries: summaries,
+    sessionObservations: observations,
     qa: Array.isArray(raw.qa) ? raw.qa : [],
   };
+}
+
+function flattenEventSummary(event: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(event)) {
+    if (k === 'date' && typeof v === 'string') {
+      parts.push(`date: ${v}`);
+    } else if (Array.isArray(v)) {
+      for (const item of v) {
+        if (typeof item === 'string' && item.trim()) parts.push(`${k}: ${item.trim()}`);
+      }
+    }
+  }
+  return parts.join('; ');
+}
+
+function flattenObservations(observation: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const [speaker, rows] of Object.entries(observation)) {
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (Array.isArray(row) && typeof row[0] === 'string') {
+        const evidence = typeof row[1] === 'string' ? ` (${row[1]})` : '';
+        out.push(`${speaker}: ${row[0]}${evidence}`);
+      } else if (typeof row === 'string') {
+        out.push(`${speaker}: ${row}`);
+      }
+    }
+  }
+  return out;
 }
 
 /**

@@ -17,6 +17,7 @@
     "test": "node scripts/smoke.mjs",
     "typecheck": "tsc --noEmit",
     "benchmark": "tsx scripts/benchmark/run.ts",
+    "benchmark:diagnose": "tsx scripts/benchmark/diagnose.ts",
     "benchmark:smoke": "tsx scripts/benchmark/run.ts --smoke",
     "benchmark:stub": "tsx scripts/benchmark/run.ts --stub"
   },

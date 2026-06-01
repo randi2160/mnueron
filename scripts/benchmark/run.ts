@@ -8,7 +8,9 @@
  *   npm run benchmark:smoke                    # tiny fixture, real LocalProvider, no API key
  *   npm run benchmark -- --stub                # stub provider (in-memory) for harness validation
  *   npm run benchmark -- --limit 20            # cap QA per sample for cost control
- *   npm run benchmark -- --k 30                # retrieval depth (default 30)
+ *   npm run benchmark -- --k 20                # retrieval depth (default 20)
+ *   npm run benchmark -- --k 10 --token-budget 2000
+ *                                                # cheaper retrieval profile
  *   npm run benchmark -- --ingestion turns     # per-turn memories (previous baseline)
  *   npm run benchmark -- --ingestion windows   # rolling 5-turn windows (default)
  *   npm run benchmark -- --ingestion both      # save both kinds
@@ -43,6 +45,9 @@ interface CliArgs {
   rerank: boolean;
   speakerBoost: boolean;
   temporalSort: boolean;
+  neighborRadius?: number;
+  tokenBudget?: number;
+  rerankChars?: number;
 }
 
 function parseArgs(): CliArgs {
@@ -50,7 +55,7 @@ function parseArgs(): CliArgs {
   const out: CliArgs = {
     smoke: false,
     stub: false,
-    k: 30,
+    k: 20,            // balanced default: enough breadth for multi-hop/temporal without Mem0-sized context
     judgeModel: 'gpt-4o',         // stronger judge — neutralizes mini-judging-mini leniency
     answerModel: 'gpt-4o-mini',   // product-realistic — most users won't pay for 4o on every answer
     datasetPath: process.env.LOCOMO_PATH ?? 'scripts/benchmark/data/locomo10.json',
@@ -78,6 +83,9 @@ function parseArgs(): CliArgs {
     else if (a === '--no-rerank') out.rerank = false;
     else if (a === '--no-speaker-boost') out.speakerBoost = false;
     else if (a === '--no-temporal-sort') out.temporalSort = false;
+    else if (a === '--neighbor-radius') out.neighborRadius = parseInt(args[++i], 10);
+    else if (a === '--token-budget') out.tokenBudget = parseInt(args[++i], 10);
+    else if (a === '--rerank-chars') out.rerankChars = parseInt(args[++i], 10);
   }
   if (out.smoke && !process.env.LOCOMO_PATH) {
     out.datasetPath = 'scripts/benchmark/sample/tiny-conversation.json';
@@ -111,6 +119,9 @@ async function runSample(sample: LoComoSample, args: CliArgs): Promise<QAResult[
     rerank: args.rerank,
     speakers,
     temporalSort: args.temporalSort,
+    neighborRadius: args.neighborRadius,
+    tokenBudget: args.tokenBudget,
+    rerankChars: args.rerankChars,
   });
   const userId = sample.sample_id;
 
@@ -203,6 +214,9 @@ async function main(): Promise<void> {
   console.log(`  mode:           ${args.smoke ? 'SMOKE' : 'FULL (LoCoMo10)'}`);
   console.log(`  dataset:        ${args.datasetPath}`);
   console.log(`  retrieval k:    ${args.k}`);
+  console.log(`  neighbor radius: ${args.neighborRadius ?? 'adapter default'}`);
+  console.log(`  token budget:   ${args.tokenBudget ?? 'adapter default'}`);
+  console.log(`  rerank chars:   ${args.rerankChars ?? 'adapter default'}`);
   console.log(`  rerank:         ${args.rerank ? 'on (cross-encoder, 2x oversample)' : 'off'}`);
   console.log(`  speaker boost:  ${args.speakerBoost ? 'on (1.4x for named speakers)' : 'off'}`);
   console.log(`  temporal sort:  ${args.temporalSort ? 'on (chronological re-sort on temporal queries)' : 'off'}`);

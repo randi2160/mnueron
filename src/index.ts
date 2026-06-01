@@ -56,7 +56,7 @@ async function main() {
   // not "tool offline." loadPlugins itself catches per-plugin errors.
   const pluginRegistry = await loadPlugins(provider).catch(e => {
     process.stderr.write(`[mnueron] plugin loader error: ${e?.message ?? e}\n`);
-    return { processors: [], sources: [], exporters: [], embedders: [], loaded: [] };
+    return { processors: [], sources: [], exporters: [], embedders: [], meetingSources: [], loaded: [] };
   });
   if (pluginRegistry.loaded.length > 0) {
     process.stderr.write(

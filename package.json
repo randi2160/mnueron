@@ -1,6 +1,6 @@
 {
   "name": "mnueron",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "MNUERON â€” persistent memory for Claude Desktop, Claude Code, Cursor, and any AI dev tool or app. Local-first, free, with optional hosted multi-tenant backend.",
   "type": "module",
   "main": "dist/index.js",

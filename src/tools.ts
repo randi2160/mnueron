@@ -627,9 +627,11 @@ export async function handleToolCall(
       if (!idOrRef) throw new Error('id_or_parent_ref is required');
       const findThread = (provider as any).findThread;
       if (typeof findThread !== 'function') {
-        throw new Error('memory_get_thread is only supported in local mode for now');
+        throw new Error('memory_get_thread is not supported by this provider');
       }
-      const chunks = findThread.call(provider, idOrRef) as Memory[];
+      // Local returns Memory[] synchronously; remote returns Promise<Memory[]>.
+      // await handles both.
+      const chunks = (await findThread.call(provider, idOrRef)) as Memory[];
       if (chunks.length === 0) return { chunks: [], count: 0 };
       const processed = await runAfterRecall(chunks, registry);
       return {

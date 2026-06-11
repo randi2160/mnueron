@@ -652,7 +652,7 @@ export class LocalProvider implements Provider {
   }
 
   async bulkSave(inputs: SaveMemoryInput[]) {
-    let saved = 0, errors = 0;
+    let saved = 0, errors = 0, skipped = 0;
 
     // 1. Redact secrets up front, same as save().
     const redactedInputs = inputs.map(preSaveTransform);
@@ -691,13 +691,17 @@ export class LocalProvider implements Provider {
       expanded.push(input);
     }
 
-    // Pre-compute embeddings for the whole (expanded) batch in one go —
-    // much faster than calling embed() N times because Transformers.js
-    // batches the forward pass.
-    const vectors = this.vecAvailable
-      ? await embedBatch(expanded.map(i => i.content))
-      : expanded.map(() => null);
-
+    // Persist in per-source_ref groups so progress is durable and re-runs are
+    // idempotent. The previous implementation embedded the ENTIRE expanded set
+    // in one forward pass and committed a single transaction at the very end.
+    // For large imports (e.g. many big Cowork transcripts → thousands of
+    // chunks) that one embedding pass exceeded the caller's request timeout,
+    // and because the only DB write was the final transaction, a timed-out
+    // call committed nothing — so every retry restarted from zero and could
+    // never make progress. We now (a) embed in bounded sub-batches, (b) commit
+    // each source group in its own transaction, and (c) skip groups whose
+    // source_ref is already present (the upsert-by-source_ref the import path
+    // always advertised but never actually performed here).
     const insertMem = this.db.prepare(`
       INSERT INTO memories (id, namespace, content, tags_json, source, source_ref, meta_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -709,35 +713,91 @@ export class LocalProvider implements Provider {
     const insertVec = this.vecAvailable
       ? this.db.prepare(`INSERT INTO memories_vec (memory_id, embedding) VALUES (?, ?)`)
       : null;
+    const existsByRef = this.db.prepare(
+      `SELECT 1 FROM memories WHERE source_ref = ? LIMIT 1`,
+    );
 
-    const tx = this.db.transaction((items: SaveMemoryInput[]) => {
-      for (let i = 0; i < items.length; i++) {
-        const input = items[i];
-        try {
-          const id = randomUUID();
-          const now = Date.now();
-          const ns = input.namespace ?? 'default';
-          const tags = input.tags ?? [];
-          insertMem.run(
-            id, ns, input.content, JSON.stringify(tags),
-            input.source ?? 'manual',
-            input.source_ref ?? null,
-            input.metadata ? JSON.stringify(input.metadata) : null,
-            now, now,
-          );
-          insertFts.run(input.content, tags.join(' '), ns, id);
-          const vec = vectors[i];
-          if (vec && insertVec) {
-            insertVec.run(id, Buffer.from(vec.buffer));
-          }
-          saved++;
-        } catch (e) {
-          errors++;
-        }
+    // Group expanded chunks by source_ref. All chunks of one source (e.g. a
+    // single Cowork session) share parent_ref == source_ref, so a group maps
+    // 1:1 to an importable unit that we can dedup and commit atomically.
+    const groups = new Map<string, SaveMemoryInput[]>();
+    const ungrouped: SaveMemoryInput[] = [];
+    for (const item of expanded) {
+      const ref = item.source_ref ?? null;
+      if (ref) {
+        const g = groups.get(ref);
+        if (g) g.push(item);
+        else groups.set(ref, [item]);
+      } else {
+        ungrouped.push(item);
       }
-    });
-    tx(expanded);
-    return { saved, errors };
+    }
+
+    // Keep each embedding forward-pass small and bounded regardless of how
+    // large a single source is.
+    const EMBED_BATCH = 32;
+
+    const persistGroup = async (
+      items: SaveMemoryInput[],
+      dedupRef: string | null,
+    ): Promise<void> => {
+      // Idempotency: a present source_ref means this source already imported.
+      // Groups commit atomically, so there are never partial sources to repair.
+      if (dedupRef && existsByRef.get(dedupRef)) {
+        skipped += items.length;
+        return;
+      }
+
+      const vectors: (Float32Array | null)[] = [];
+      if (this.vecAvailable) {
+        for (let i = 0; i < items.length; i += EMBED_BATCH) {
+          const slice = items.slice(i, i + EMBED_BATCH);
+          const vs = await embedBatch(slice.map(s => s.content));
+          for (const v of vs) vectors.push(v);
+        }
+      } else {
+        for (let i = 0; i < items.length; i++) vectors.push(null);
+      }
+
+      const tx = this.db.transaction((rows: SaveMemoryInput[]) => {
+        for (let i = 0; i < rows.length; i++) {
+          const input = rows[i];
+          try {
+            const id = randomUUID();
+            const now = Date.now();
+            const ns = input.namespace ?? 'default';
+            const tags = input.tags ?? [];
+            insertMem.run(
+              id, ns, input.content, JSON.stringify(tags),
+              input.source ?? 'manual',
+              input.source_ref ?? null,
+              input.metadata ? JSON.stringify(input.metadata) : null,
+              now, now,
+            );
+            insertFts.run(input.content, tags.join(' '), ns, id);
+            const vec = vectors[i];
+            if (vec && insertVec) {
+              insertVec.run(id, Buffer.from(vec.buffer));
+            }
+            saved++;
+          } catch (e) {
+            errors++;
+          }
+        }
+      });
+      tx(items);
+    };
+
+    for (const [ref, items] of groups) {
+      await persistGroup(items, ref);
+    }
+    // Items without a source_ref can't be deduped; still persist them in
+    // bounded batches so one giant pass can't blow the timeout.
+    for (let i = 0; i < ungrouped.length; i += EMBED_BATCH) {
+      await persistGroup(ungrouped.slice(i, i + EMBED_BATCH), null);
+    }
+
+    return { saved, errors, skipped };
   }
 
   // ─── read path: hybrid keyword + vector with RRF ─────────────────────────

@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
  *   PATCH  /api/memories/<id>              - partial update
  *   DELETE /api/memories/<id>              - remove
  *   POST   /api/memories/search/bulk       - multi-query search
+ *   GET    /api/threads/<ref>              - all chunks of a thread
  *   GET    /api/namespaces                 - namespace + counts
  *   GET    /api/health                     - health probe
  *
@@ -41,6 +42,14 @@ const CHUNK_SOFT_TARGET = 4000;
 const SAVE_CONCURRENCY = 2;
 const MIN_WRITE_INTERVAL_MS = 1100;
 const SAVE_MAX_RETRIES = 4;
+
+/**
+ * A bare Postgres uuid. Anything else — e.g. a thread key like
+ * "cowork:<sessionId>" or "chunked:<uuid>" — is NOT a memory id and must be
+ * treated as a parent_ref/source_ref when resolving a thread.
+ */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function detectRemoteClient(): string {
   const explicit = process.env.MNUERON_CLIENT;
@@ -222,6 +231,42 @@ export class RemoteProvider implements Provider {
       if ((e as HttpError)?.status === 404) return null;
       throw e;
     }
+  }
+
+  /**
+   * Reassemble a chunked thread from the hosted store. Mirrors
+   * LocalProvider.findThread so `memory_get_thread` works in hosted mode
+   * (previously it threw "only supported in local mode").
+   *
+   * `idOrRef` may be:
+   *   - a thread key (metadata.parent_ref or source_ref, e.g.
+   *     "cowork:<sessionId>" or "chunked:<uuid>"), or
+   *   - the memory id of any single chunk — we first resolve it to its
+   *     parent_ref/source_ref so the WHOLE thread is returned, not just
+   *     that one row (matching the local provider's behaviour).
+   *
+   * Hits GET /api/threads/<ref>, which matches parent_ref OR source_ref and
+   * orders chunks by chunk_index.
+   */
+  async findThread(idOrRef: string): Promise<Memory[]> {
+    let ref = idOrRef;
+
+    // A bare uuid might be a child chunk's id. Resolve it to the thread key
+    // first; if it's a standalone memory (no parent_ref/source_ref) we fall
+    // back to the id itself, and the endpoint returns it as a 1-item thread.
+    if (UUID_RE.test(idOrRef)) {
+      const mem = await this.get(idOrRef).catch(() => null);
+      const meta = (mem?.metadata ?? {}) as Record<string, unknown>;
+      const parentRef =
+        typeof meta.parent_ref === 'string' ? meta.parent_ref : undefined;
+      ref = parentRef ?? mem?.source_ref ?? idOrRef;
+    }
+
+    const res = await this.req<{ parent_ref: string; chunks: Memory[] }>(
+      'GET',
+      `/api/threads/${encodeURIComponent(ref)}`,
+    );
+    return res.chunks ?? [];
   }
 
   async delete(id: string): Promise<boolean> {

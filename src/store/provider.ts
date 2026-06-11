@@ -233,7 +233,7 @@ export interface Provider {
   update?(id: string, patch: UpdateMemoryInput): Promise<Memory | null>;
   delete(id: string): Promise<boolean>;
   namespaces(): Promise<NamespaceInfo[]>;
-  bulkSave(inputs: SaveMemoryInput[]): Promise<{ saved: number; errors: number }>;
+  bulkSave(inputs: SaveMemoryInput[]): Promise<{ saved: number; errors: number; skipped?: number }>;
 
   // ── P2.3 — Entity API ────────────────────────────────────────────────
   // Optional on the interface (not every provider exposes them yet) but the
@@ -329,3 +329,4 @@ export interface Provider {
 
   close(): Promise<void>;
 }
+// (resync touch)
